@@ -1,0 +1,406 @@
+extern crate yaml_rust;
+//#[macro_use]
+extern crate clap;
+#[macro_use]
+extern crate error_chain;
+extern crate diffy;
+extern crate ansi_colors;
+extern crate linked_hash_map;
+
+use yaml_rust::{YamlLoader,Yaml};
+use clap::Parser;
+use error_chain::ChainedError;
+use linked_hash_map::LinkedHashMap;
+use std::fmt::{Formatter,Display};
+use std::rc::Rc;
+use std::cmp::max;
+use std::{fs,fmt};
+use std::process::exit;
+use diffy::{create_patch,PatchFormatter};
+use ansi_colors::*;
+
+error_chain!{
+    foreign_links {
+        Io(std::io::Error);
+        Yaml(yaml_rust::ScanError);
+    }
+    errors {
+        KeyNotFound(key: String) {
+            description("key not found in YAML document, or is wrong type")
+            display("key '{}' not found in YAML document, or is wrong type",key)
+        }
+    }
+}
+
+#[derive(Parser)]
+struct Opts {
+    file1: String,
+    file2: String,
+    #[clap(short,long,about="Compare kubernetes yaml documents")]
+    k8s: bool,
+    #[clap(short,long,about="Don't produce coloured output")]
+    no_colour: bool
+}
+
+#[derive(PartialEq,Eq,Hash,Debug,Clone)]
+struct GRV {
+    api_version: String,
+    kind: String
+}
+
+impl Display for GRV {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f,"{},{}",self.api_version,self.kind)
+    }
+}
+
+#[derive(PartialEq,Eq,Hash,Debug,Clone)]
+struct K8SMeta {
+    grv: GRV,
+    name: String,
+    namespace: Option<String>
+}
+
+impl Display for K8SMeta {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match &self.namespace {
+            None     => write!(f,"{},{}",self.grv,self.name),
+            Some(ns) => write!(f,"{},{}/{}",self.grv,self.name,ns)
+        }
+    }
+}
+
+// Index key for YAML documents - either by 
+// position or Kubernetes metadata
+#[derive(PartialEq,Eq,Hash,Debug,Clone)]
+enum DocKey {
+    Position(i32),
+    K8S(K8SMeta)
+}
+
+impl Display for DocKey {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            DocKey::Position(n) => write!(f,"[{}]",n),
+            DocKey::K8S(m)      => write!(f,"{}",m)
+        }
+    }
+}
+
+type Documents = LinkedHashMap<DocKey,Yaml>;
+
+#[derive(PartialEq,Clone)]
+enum ItemKey {
+    Index(usize),
+    Key(String)
+}
+
+#[derive(PartialEq,Clone)]
+struct KeyPath(Vec<ItemKey>);
+
+impl KeyPath {
+    fn new() -> KeyPath {
+        KeyPath(Vec::<ItemKey>::new())
+    }
+    fn push(&self,key: ItemKey) -> KeyPath {
+        let mut newvec = self.0.clone();
+        newvec.push(key);
+        KeyPath(newvec)
+    }
+}
+
+impl Display for KeyPath {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut first = true;
+        for item in &self.0 {
+            match item {
+                ItemKey::Index(u) => { write!(f,"[{}]",u)?; }
+                ItemKey::Key(str) => {
+                    let sep = if first {""} else {"."};
+                    if str.contains(".") {
+                        write!(f,"{}[{}]",sep,str)?;
+                    } else {
+                        write!(f,"{}{}",sep,str)?;
+                    }
+                }
+            }
+            first = false
+        }
+        Ok(())
+    }
+}
+
+#[derive(PartialEq,Clone)]
+struct Location<'a> {
+    fname: &'a str,
+    doc: Rc<DocKey>,
+    path: KeyPath,
+}
+
+impl<'a> Display for Location<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f,"{}: {} {}",self.fname,self.doc,self.path)
+    }
+}
+
+impl<'a> Location<'a> {
+    fn parent(&self) -> Option<Location<'a>> {
+        if self.path.0.is_empty() {
+            None
+        } else {
+            let mut newvec = self.path.0.clone();
+            newvec.pop();
+            Some(Location{fname: self.fname, doc: self.doc.clone(), path: KeyPath(newvec)})
+        }
+    }
+}
+
+struct LocationAndValue<'a> {
+    loc: Location<'a>,
+    value: Yaml
+}
+
+enum Diff<'a> {
+    Add(LocationAndValue<'a>),
+    Remove(LocationAndValue<'a>),
+    Differ(LocationAndValue<'a>,LocationAndValue<'a>)
+}
+
+impl<'a> Display for LocationAndValue<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f,"{} = {:?}",self.loc,self.value)
+    }
+}
+
+fn load_file(fname: &str) -> Result<Vec<Yaml>> {
+    let yaml_text = fs::read_to_string(fname)?;
+    Ok(YamlLoader::load_from_str(&yaml_text)?)
+}
+
+trait YamlResult {
+    fn str_result(&self, key: &str) -> Result<&str>;
+    fn string_result(&self, key: &str) -> Result<String>;
+}
+
+impl YamlResult for Yaml {
+    fn str_result(&self, key: &str) -> Result<&str> {
+        let val = self[key].as_str();
+        val.ok_or(ErrorKind::KeyNotFound(key.to_string()).into())
+    }
+    fn string_result(&self,key: &str) -> Result<String> {
+        Ok(self.str_result(key)?.to_string())
+    }
+}
+
+fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
+    let mut result = Documents::new();
+    if opts.k8s {
+        for yaml in docs {
+            if yaml.is_null() { continue; }
+            let api_version = yaml.string_result("apiVersion")?;
+            let kind = yaml.string_result("kind")?;
+            let name = yaml["metadata"].string_result("name")?;
+            let namespace = yaml["metadata"]["namespace"].as_str().map(String::from);
+            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRV{api_version,kind}});
+            result.insert(key,yaml);
+        }
+    } else {
+        let mut index = 0;
+        for yaml in docs {
+            result.insert(DocKey::Position(index),yaml);
+            index+=1;
+        }
+    }
+    Ok(result)
+}
+
+type Diffs<'a> = Vec<Diff<'a>>;
+
+fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+    if y1.is_array() || y2.is_array() {
+        let empty = Vec::<Yaml>::new();
+        let null_yaml = Yaml::Null;
+        let arr1 = y1.as_vec().unwrap_or(&empty);
+        let arr2 = y2.as_vec().unwrap_or(&empty);
+        let max_len = max(arr1.len(),arr2.len());
+        for i in 0..max_len {
+            let v1 = if i < arr1.len() { &arr1[i] } else { &null_yaml };
+            let v2 = if i < arr2.len() { &arr2[i] } else { &null_yaml };
+            recurse_diffs(opts, dockey.clone(), diffs, path.push(ItemKey::Index(i)), v1, v2);
+        }
+        if !y1.is_array() {
+            recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+        } else if !y2.is_array() {
+            recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+        }
+    } else {
+        let ohash1 = y1.as_hash();
+        let ohash2 = y2.as_hash();
+        if ohash1.is_some() || ohash2.is_some() {
+            let empty = yaml_rust::yaml::Hash::new();
+            let null_yaml = Yaml::Null;
+            let hash1 = ohash1.unwrap_or(&empty);
+            let hash2 = ohash2.unwrap_or(&empty);
+            for key in hash1.keys() {
+                let v1 = &hash1[key];
+                let v2 = if hash2.contains_key(key) { &hash2[key] } else { &null_yaml };
+                let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
+                recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), v1, v2);
+            }
+            for key in hash2.keys() {
+                let v2 = &hash2[key];
+                if !hash1.contains_key(key) {
+                    let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
+                    recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), &null_yaml, v2);
+                }
+            }
+            if ohash1.is_none() {
+                recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+            } else if ohash2.is_none() {
+                recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+            }
+        } else if y1.is_null() && !y2.is_null() {
+            diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
+        } else if !y1.is_null() && y2.is_null() {
+            diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
+        } else if *y1 != *y2 {
+            let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
+            let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
+            diffs.push(Diff::Differ(lav1,lav2))
+        }
+    }
+}
+
+fn find_diffs<'a>(opts: &'a Opts, d1 : &Documents, d2: &Documents) -> Diffs<'a> {
+    let mut diffs = Diffs::new();
+    for key in d1.keys() {
+        if d2.contains_key(key) {
+            let path = KeyPath::new();
+            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&d1[key],&d2[key])
+        }
+    }
+    diffs
+}
+
+fn new_section<'a>(parent: &mut Option<Location<'a>>, location: &Location<'a>) -> bool {
+    let new_parent = location.parent();
+    if parent.is_some() && new_parent != *parent {
+        *parent = new_parent;
+        true
+    } else {
+        *parent = new_parent;
+        false
+    }
+}
+
+enum LzyStr<'a> {
+    Ref(&'a str),
+    Val(String)
+}
+
+impl From<String> for LzyStr<'static> {
+    fn from(s: String) -> LzyStr<'static> {
+        LzyStr::Val(s)
+    }
+}
+
+impl<'a> From<&'a str> for LzyStr<'a> {
+    fn from(s: &'a str) -> LzyStr<'a> {
+        LzyStr::Ref(s)
+    }
+}
+
+impl<'a> Display for LzyStr<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            LzyStr::Ref(s) => write!(f,"{}",s),
+            LzyStr::Val(s) => write!(f,"{}",s)
+        }
+    }
+}
+
+fn colorize<'a>(opts: &Opts, message: &'a str,remove: bool) -> LzyStr<'a> {
+    if opts.no_colour {
+        message.into()
+    } else {
+        let mut cmessage = ColouredStr::new(&message);
+        if remove {cmessage.red()} else {cmessage.green()}
+        format!("{}",cmessage).into()
+    }
+}
+
+fn print_location_and_value<'a>(opts: &Opts, lav: &LocationAndValue<'a>,remove: bool) {
+    let ostr = lav.value.as_str();
+    let chevron = if remove {"<"} else {">"};
+    if ostr.map(|s| s.contains('\n')).unwrap_or(false) {
+        let text = ostr.unwrap();
+        let message = format!("{} {} = ...\n{}\n",chevron,lav.loc,text);
+        println!("{}",colorize(opts,&message,remove));
+        if !text.ends_with("\n") { println!(); }
+    } else {
+        let message = format!("{} {}",chevron,lav);
+        println!("{}", colorize(opts,&message,remove));
+    }
+}
+
+fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) {
+    let mut last_parent1: Option<Location<'a>> = None;
+    let mut last_parent2: Option<Location<'a>> = None;
+    for diff in diffs {
+        match diff {
+            Diff::Add(lav) => {
+                if new_section(&mut last_parent1, &lav.loc) { println!() }
+                print_location_and_value(opts,lav,false);
+            }
+            Diff::Remove(lav) => {
+                if new_section(&mut last_parent2, &lav.loc) { println!() }
+                print_location_and_value(opts,lav,true);
+            }
+            Diff::Differ(lav1,lav2) => {
+                let change1 = new_section(&mut last_parent1, &lav1.loc);
+                let change2 = new_section(&mut last_parent1, &lav2.loc);
+                if change1 || change2 { println!() }
+                let str1 = lav1.value.as_str();
+                let str2 = lav2.value.as_str();
+                if str1.is_some() && str2.is_some() && (str1.unwrap().contains('\n') || str2.unwrap().contains('\n')) {
+                    let patch = create_patch(str1.unwrap(),str2.unwrap());
+                    let mut f = PatchFormatter::new();
+                    if !opts.no_colour { f = f.with_color() }
+                    let message = format!("< {}",lav1.loc);
+                    println!("{}",colorize(opts,&message,true));
+                    let message = format!("> {}",lav1.loc);
+                    println!("{}",colorize(opts,&message,false));
+                    print!("{}",f.fmt_patch(&patch));
+                } else {
+                    let message = format!("< {}",lav1);
+                    println!("{}",colorize(opts,&message,true));
+                    let message = format!("> {}",lav2);
+                    println!("{}",colorize(opts,&message,false));
+                }
+            }
+        }
+    }
+}
+
+fn do_diff(opts: &Opts) -> Result<i32> {
+    let y1 = load_file(&opts.file1).chain_err(|| format!("while reading {}",opts.file1))?;
+    let y2 = load_file(&opts.file2).chain_err(|| format!("while reading {}",opts.file2))?;
+    let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
+    let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
+    let diffs = find_diffs(opts,&d1,&d2);
+    show_diffs(opts,&diffs);
+    //println!("{:?}\n{:?}",i1,i2);
+    Ok(if diffs.len() == 0 {0} else {1})
+}
+
+fn main() {
+    let opts: Opts = Opts::parse();
+    let result = do_diff(&opts);
+    match result {
+        Ok(n) => exit(n),
+        Err(e) => {
+            eprintln!("yamldiff: {}",e.display_chain().to_string());
+            exit(2)
+        }
+    }
+}
