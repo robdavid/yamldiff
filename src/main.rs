@@ -7,7 +7,7 @@ extern crate diffy;
 extern crate ansi_colors;
 extern crate linked_hash_map;
 
-use yaml_rust::{YamlLoader,Yaml};
+use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
 use error_chain::ChainedError;
 use linked_hash_map::LinkedHashMap;
@@ -42,6 +42,37 @@ struct Opts {
     no_colour: bool
 }
 
+/** A string struct that can hold either a borrowed reference or String value */
+enum LzyStr<'a> {
+    Ref(&'a str),
+    Val(String)
+}
+
+/** Convert from String */
+impl From<String> for LzyStr<'static> {
+    fn from(s: String) -> LzyStr<'static> {
+        LzyStr::Val(s)
+    }
+}
+
+/** Convert from &str */
+impl<'a> From<&'a str> for LzyStr<'a> {
+    fn from(s: &'a str) -> LzyStr<'a> {
+        LzyStr::Ref(s)
+    }
+}
+
+/** Display the string */
+impl<'a> Display for LzyStr<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            LzyStr::Ref(s) => write!(f,"{}",s),
+            LzyStr::Val(s) => write!(f,"{}",s)
+        }
+    }
+}
+
+/** Kubernetes metatdata - group, version and kind */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
 struct GRV {
     api_version: String,
@@ -54,6 +85,7 @@ impl Display for GRV {
     }
 }
 
+/** Kubernetes metadata - group, version kind plus name & namespace */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
 struct K8SMeta {
     grv: GRV,
@@ -70,8 +102,10 @@ impl Display for K8SMeta {
     }
 }
 
-// Index key for YAML documents - either by 
-// position or Kubernetes metadata
+/** 
+ * Index key for multiple document YAML files - either by 
+ * position or Kubernetes metadata 
+ */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
 enum DocKey {
     Position(i32),
@@ -89,12 +123,19 @@ impl Display for DocKey {
 
 type Documents = LinkedHashMap<DocKey,Yaml>;
 
+/**
+ * Component of a path in the document heirarchy. Either an array index
+ * or a hash key.
+ */
 #[derive(PartialEq,Clone)]
 enum ItemKey {
     Index(usize),
     Key(String)
 }
 
+/**
+ * A path in the document heirarchy as a vector of path components.
+ */
 #[derive(PartialEq,Clone)]
 struct KeyPath(Vec<ItemKey>);
 
@@ -177,18 +218,26 @@ fn load_file(fname: &str) -> Result<Vec<Yaml>> {
     Ok(YamlLoader::load_from_str(&yaml_text)?)
 }
 
-trait YamlResult {
+
+trait YamlFuncs {
     fn str_result(&self, key: &str) -> Result<&str>;
     fn string_result(&self, key: &str) -> Result<String>;
+    fn is_hash(&self) -> bool;
 }
 
-impl YamlResult for Yaml {
+impl YamlFuncs for Yaml {
     fn str_result(&self, key: &str) -> Result<&str> {
         let val = self[key].as_str();
         val.ok_or(ErrorKind::KeyNotFound(key.to_string()).into())
     }
     fn string_result(&self,key: &str) -> Result<String> {
         Ok(self.str_result(key)?.to_string())
+    }
+    fn is_hash(&self) -> bool {
+        match self {
+            Yaml::Hash(_) => true,
+            _ =>             false
+        }
     }
 }
 
@@ -216,58 +265,62 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
 
 type Diffs<'a> = Vec<Diff<'a>>;
 
+fn recurse_array_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+    let empty = Vec::<Yaml>::new();
+    let null_yaml = Yaml::Null;
+    let arr1 = y1.as_vec().unwrap_or(&empty);
+    let arr2 = y2.as_vec().unwrap_or(&empty);
+    let max_len = max(arr1.len(),arr2.len());
+    for i in 0..max_len {
+        let v1 = if i < arr1.len() { &arr1[i] } else { &null_yaml };
+        let v2 = if i < arr2.len() { &arr2[i] } else { &null_yaml };
+        recurse_diffs(opts, dockey.clone(), diffs, path.push(ItemKey::Index(i)), v1, v2);
+    }
+    if !y1.is_array() {
+        recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+    } else if !y2.is_array() {
+        recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+    }
+}
+
+fn recurse_hash_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+    let empty = yaml::Hash::new();
+    let null_yaml = Yaml::Null;
+    let hash1 = y1.as_hash().unwrap_or(&empty);
+    let hash2 = y2.as_hash().unwrap_or(&empty);
+    for key in hash1.keys() {
+        let v1 = &hash1[key];
+        let v2 = if hash2.contains_key(key) { &hash2[key] } else { &null_yaml };
+        let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
+        recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), v1, v2);
+    }
+    for key in hash2.keys() {
+        let v2 = &hash2[key];
+        if !hash1.contains_key(key) {
+            let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
+            recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), &null_yaml, v2);
+        }
+    }
+    if !y1.is_hash() {
+        recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+    } else if !y2.is_hash() {
+        recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+    }
+}
+ 
 fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
     if y1.is_array() || y2.is_array() {
-        let empty = Vec::<Yaml>::new();
-        let null_yaml = Yaml::Null;
-        let arr1 = y1.as_vec().unwrap_or(&empty);
-        let arr2 = y2.as_vec().unwrap_or(&empty);
-        let max_len = max(arr1.len(),arr2.len());
-        for i in 0..max_len {
-            let v1 = if i < arr1.len() { &arr1[i] } else { &null_yaml };
-            let v2 = if i < arr2.len() { &arr2[i] } else { &null_yaml };
-            recurse_diffs(opts, dockey.clone(), diffs, path.push(ItemKey::Index(i)), v1, v2);
-        }
-        if !y1.is_array() {
-            recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
-        } else if !y2.is_array() {
-            recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
-        }
-    } else {
-        let ohash1 = y1.as_hash();
-        let ohash2 = y2.as_hash();
-        if ohash1.is_some() || ohash2.is_some() {
-            let empty = yaml_rust::yaml::Hash::new();
-            let null_yaml = Yaml::Null;
-            let hash1 = ohash1.unwrap_or(&empty);
-            let hash2 = ohash2.unwrap_or(&empty);
-            for key in hash1.keys() {
-                let v1 = &hash1[key];
-                let v2 = if hash2.contains_key(key) { &hash2[key] } else { &null_yaml };
-                let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-                recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), v1, v2);
-            }
-            for key in hash2.keys() {
-                let v2 = &hash2[key];
-                if !hash1.contains_key(key) {
-                    let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-                    recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), &null_yaml, v2);
-                }
-            }
-            if ohash1.is_none() {
-                recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
-            } else if ohash2.is_none() {
-                recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
-            }
-        } else if y1.is_null() && !y2.is_null() {
-            diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
-        } else if !y1.is_null() && y2.is_null() {
-            diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
-        } else if *y1 != *y2 {
-            let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
-            let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
-            diffs.push(Diff::Differ(lav1,lav2))
-        }
+        recurse_array_diffs(opts, dockey, diffs, path, y1, y2);
+    } else if y1.is_hash() || y2.is_hash() {
+        recurse_hash_diffs(opts, dockey, diffs, path, y1, y2);
+    } else if y1.is_null() && !y2.is_null() {
+        diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
+    } else if !y1.is_null() && y2.is_null() {
+        diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
+    } else if *y1 != *y2 {
+        let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
+        let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
+        diffs.push(Diff::Differ(lav1,lav2))
     }
 }
 
@@ -290,32 +343,6 @@ fn new_section<'a>(parent: &mut Option<Location<'a>>, location: &Location<'a>) -
     } else {
         *parent = new_parent;
         false
-    }
-}
-
-enum LzyStr<'a> {
-    Ref(&'a str),
-    Val(String)
-}
-
-impl From<String> for LzyStr<'static> {
-    fn from(s: String) -> LzyStr<'static> {
-        LzyStr::Val(s)
-    }
-}
-
-impl<'a> From<&'a str> for LzyStr<'a> {
-    fn from(s: &'a str) -> LzyStr<'a> {
-        LzyStr::Ref(s)
-    }
-}
-
-impl<'a> Display for LzyStr<'a> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            LzyStr::Ref(s) => write!(f,"{}",s),
-            LzyStr::Val(s) => write!(f,"{}",s)
-        }
     }
 }
 
