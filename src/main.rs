@@ -185,6 +185,9 @@ impl<'a> Display for Location<'a> {
 }
 
 impl<'a> Location<'a> {
+    fn new(fname: &'a str, doc: Rc<DocKey>, path: KeyPath) -> Location<'a> {
+        Location{fname,doc,path}
+    }
     fn parent(&self) -> Option<Location<'a>> {
         if self.path.0.is_empty() {
             None
@@ -201,15 +204,33 @@ struct LocationAndValue<'a> {
     value: Yaml
 }
 
+impl<'a> LocationAndValue<'a> {
+    fn new(fname: &'a str, doc: Rc<DocKey>, path: KeyPath, value: &Yaml) -> LocationAndValue<'a> {
+        LocationAndValue{loc: Location::new(fname,doc,path),value: value.clone()}
+    }
+}
+
+impl<'a> Display for LocationAndValue<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f,"{} = {:?}",self.loc,self.value)
+    }
+}
+
 enum Diff<'a> {
     Add(LocationAndValue<'a>),
     Remove(LocationAndValue<'a>),
     Differ(LocationAndValue<'a>,LocationAndValue<'a>)
 }
 
-impl<'a> Display for LocationAndValue<'a> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f,"{} = {:?}",self.loc,self.value)
+impl<'a> Diff<'a> {
+    fn add(fname: &'a str, doc: Rc<DocKey>, path: KeyPath, value: &Yaml) -> Diff<'a> {
+        Diff::Add(LocationAndValue::new(fname,doc,path,value))
+    }
+    fn remove(fname: &'a str, doc: Rc<DocKey>, path: KeyPath, value: &Yaml) -> Diff<'a> {
+        Diff::Remove(LocationAndValue::new(fname,doc,path,value))
+    }
+    fn differ(fname1: &'a str, fname2: &'a str, doc: Rc<DocKey>, path: KeyPath, value1: &Yaml, value2: &Yaml) -> Diff<'a> {
+        Diff::Differ(LocationAndValue::new(fname1,doc.clone(),path.clone(),value1),LocationAndValue::new(fname2,doc,path,value2))
     }
 }
 
@@ -314,13 +335,16 @@ fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, 
     } else if y1.is_hash() || y2.is_hash() {
         recurse_hash_diffs(opts, dockey, diffs, path, y1, y2);
     } else if y1.is_null() && !y2.is_null() {
-        diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
+        diffs.push(Diff::add(&opts.file2,dockey,path,y2))
+        //diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
     } else if !y1.is_null() && y2.is_null() {
-        diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
+        diffs.push(Diff::remove(&opts.file1,dockey,path,y1))
+        //diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
     } else if *y1 != *y2 {
-        let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
-        let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
-        diffs.push(Diff::Differ(lav1,lav2))
+        diffs.push(Diff::differ(&opts.file1,&opts.file2,dockey,path,y1,y2))
+        // let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
+        // let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
+        // diffs.push(Diff::Differ(lav1,lav2))
     }
 }
 
