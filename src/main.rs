@@ -336,15 +336,10 @@ fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, 
         recurse_hash_diffs(opts, dockey, diffs, path, y1, y2);
     } else if y1.is_null() && !y2.is_null() {
         diffs.push(Diff::add(&opts.file2,dockey,path,y2))
-        //diffs.push(Diff::Add(LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()}))
     } else if !y1.is_null() && y2.is_null() {
         diffs.push(Diff::remove(&opts.file1,dockey,path,y1))
-        //diffs.push(Diff::Remove(LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey, path}, value: y1.clone()}))
     } else if *y1 != *y2 {
         diffs.push(Diff::differ(&opts.file1,&opts.file2,dockey,path,y1,y2))
-        // let lav1 = LocationAndValue{loc: Location{fname: &opts.file1, doc: dockey.clone(), path: path.clone()}, value: y1.clone()};
-        // let lav2 = LocationAndValue{loc: Location{fname: &opts.file2, doc: dockey, path}, value: y2.clone()};
-        // diffs.push(Diff::Differ(lav1,lav2))
     }
 }
 
@@ -440,7 +435,6 @@ fn do_diff(opts: &Opts) -> Result<i32> {
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
     let diffs = find_diffs(opts,&d1,&d2);
     show_diffs(opts,&diffs);
-    //println!("{:?}\n{:?}",i1,i2);
     Ok(if diffs.len() == 0 {0} else {1})
 }
 
