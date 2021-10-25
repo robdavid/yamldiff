@@ -28,12 +28,17 @@ error_chain!{
     foreign_links {
         Io(std::io::Error);
         Yaml(yaml_rust::ScanError);
+        SerdeYaml(serde_yaml::Error);
         Regex(regex::Error);
     }
     errors {
         KeyNotFound(key: String) {
             description("key not found in YAML document, or is wrong type")
             display("key '{}' not found in YAML document, or is wrong type",key)
+        }
+        UnknownRenameField(field: String) {
+            description("Field found in rename directive is not recognised")
+            display("Unknown field '{}' not found in rename directive",field)
         }
     }
 }
@@ -49,7 +54,7 @@ struct Opts {
     #[clap(short('x'),long,multiple_occurrences(true),about="Exclude YAML document paths matching regex")]
     exclude: Vec<String>,
     #[clap(short('f'),long,about="Difference strategy file")]
-    strategy: String
+    strategy: Option<String>
 }
 
 impl Opts {
@@ -293,7 +298,7 @@ impl<'a> Diff<'a> {
 }
 
 fn load_file(fname: &str) -> Result<Vec<Yaml>> {
-    let yaml_text = fs::read_to_string(fname)?;
+    let yaml_text = fs::read_to_string(fname).chain_err(|| format!("while reading {}",fname))?;
     Ok(YamlLoader::load_from_str(&yaml_text)?)
 }
 
@@ -302,6 +307,7 @@ trait YamlFuncs {
     fn str_result(&self, key: &str) -> Result<&str>;
     fn string_result(&self, key: &str) -> Result<String>;
     fn is_hash(&self) -> bool;
+    fn set_value(&mut self, path: &[&str], value: Yaml);
 }
 
 impl YamlFuncs for Yaml {
@@ -318,14 +324,28 @@ impl YamlFuncs for Yaml {
             _ =>             false
         }
     }
+    fn set_value(&mut self, path: &[&str], value: Yaml) {
+        let mut current: &mut Yaml = self;
+        for i in 0..path.len() {
+            if let Yaml::Hash(h) = current {
+                if i == path.len()-1 {
+                    h.insert(Yaml::String(path[i].to_string()),value.clone());
+                    break;
+                } else {
+                    current = &mut h[&Yaml::from_str(path[i])];
+                }
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 impl MapDocument {
-    fn doc_mapping(&self, key: DocKey) -> DocKey {
+    fn doc_mapping(&self, key: DocKey, yaml: &mut Yaml) -> Result<DocKey> {
         match key {
             DocKey::K8S(mut meta) => {
                 for mapdoc in &self.k8s {
-                    let mut is_match = true;
                     if mapdoc.group_version.as_ref() != Some(&meta.grv.api_version) {
                         continue;
                     }
@@ -337,29 +357,46 @@ impl MapDocument {
                             "name" => {
                                 if meta.name == rename.from {
                                     meta.name = rename.to.clone();
+                                    yaml.set_value(&["metadata","name"],Yaml::from_str(&rename.to))
                                 }
                             }
-                            _ => ()
+                            _ => return Err(ErrorKind::UnknownRenameField(item.clone()).into())
                         }
                     }
                 }
-                DocKey::K8S(meta)
+                Ok(DocKey::K8S(meta))
             },
-            _ => key
+            _ => Ok(key)
         }
     }
 }
 
 fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
+    let map_doc = match &opts.strategy {
+        Some(fname) => {
+            let yaml = fs::read_to_string(fname)?;
+            let strategy : Strategy = serde_yaml::from_str(&yaml)?;
+            Some(strategy.mapping.document)
+        },
+        _ => None
+    };
     let mut result = Documents::new();
     if opts.k8s {
-        for yaml in docs {
+        for mut yaml in docs {
             if yaml.is_null() { continue; }
             let api_version = yaml.string_result("apiVersion")?;
             let kind = yaml.string_result("kind")?;
             let name = yaml["metadata"].string_result("name")?;
+            if let Yaml::Hash(ref mut md) = &mut yaml {
+                md.insert(Yaml::String("name".to_string()),Yaml::String("myvalue".to_string()));
+            }
+            
             let namespace = yaml["metadata"]["namespace"].as_str().map(String::from);
-            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
+            let mut key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
+            match &map_doc {
+                Some(md) => { key = md.doc_mapping(key,&mut yaml)?; }
+                None => ()
+            }
             result.insert(key,yaml);
         }
     } else {
@@ -433,10 +470,19 @@ fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, 
 
 fn find_diffs<'a>(opts: &'a Opts, d1 : &Documents, d2: &Documents) -> Diffs<'a> {
     let mut diffs = Diffs::new();
+    let null_yaml = Yaml::Null;
     for key in d1.keys() {
+        let path = KeyPath::new();
         if d2.contains_key(key) {
-            let path = KeyPath::new();
             recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&d1[key],&d2[key])
+        } else {
+            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&d1[key],&null_yaml)
+        }
+    }
+    for key in d2.keys() {
+        if !d1.contains_key(key) {
+            let path = KeyPath::new();
+            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&null_yaml,&d2[key])
         }
     }
     diffs
@@ -522,8 +568,8 @@ fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) -> Result<()> {
 }
 
 fn do_diff(opts: &Opts) -> Result<i32> {
-    let y1 = load_file(&opts.file1).chain_err(|| format!("while reading {}",opts.file1))?;
-    let y2 = load_file(&opts.file2).chain_err(|| format!("while reading {}",opts.file2))?;
+    let y1 = load_file(&opts.file1)?;
+    let y2 = load_file(&opts.file2)?;
     let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
     let diffs = find_diffs(opts,&d1,&d2);
