@@ -6,6 +6,7 @@ extern crate error_chain;
 extern crate diffy;
 extern crate ansi_colors;
 extern crate linked_hash_map;
+extern crate regex;
 
 use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
@@ -18,11 +19,13 @@ use std::{fs,fmt};
 use std::process::exit;
 use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
+use regex::Regex;
 
 error_chain!{
     foreign_links {
         Io(std::io::Error);
         Yaml(yaml_rust::ScanError);
+        Regex(regex::Error);
     }
     errors {
         KeyNotFound(key: String) {
@@ -39,7 +42,19 @@ struct Opts {
     #[clap(short,long,about="Compare kubernetes yaml documents")]
     k8s: bool,
     #[clap(short,long,about="Don't produce coloured output")]
-    no_colour: bool
+    no_colour: bool,
+    #[clap(short('x'),long,multiple_occurrences(true),about="Exclude YAML document paths matching regex")]
+    exclude: Vec<String>
+}
+
+impl Opts {
+    fn exclude_regex(&self) -> Result<Vec<Regex>> {
+        let mut result = Vec::<Regex>::new();
+        for excl in &self.exclude {
+            result.push(Regex::new(excl)?)
+        }
+        Ok(result)
+    }
 }
 
 /** A string struct that can hold either a borrowed reference or String value */
@@ -232,6 +247,13 @@ impl<'a> Diff<'a> {
     fn differ(fname1: &'a str, fname2: &'a str, doc: Rc<DocKey>, path: KeyPath, value1: &Yaml, value2: &Yaml) -> Diff<'a> {
         Diff::Differ(LocationAndValue::new(fname1,doc.clone(),path.clone(),value1),LocationAndValue::new(fname2,doc,path,value2))
     }
+    fn key_path(&self) -> &KeyPath {
+        match self {
+            Diff::Add(lav) => &lav.loc.path,
+            Diff::Remove(lav) => &lav.loc.path,
+            Diff::Differ(lav1,_) => &lav1.loc.path,
+        }
+    }
 }
 
 fn load_file(fname: &str) -> Result<Vec<Yaml>> {
@@ -389,10 +411,14 @@ fn print_location_and_value<'a>(opts: &Opts, lav: &LocationAndValue<'a>,remove: 
     }
 }
 
-fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) {
+fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) -> Result<()> {
     let mut last_parent1: Option<Location<'a>> = None;
     let mut last_parent2: Option<Location<'a>> = None;
-    for diff in diffs {
+    let exclude = opts.exclude_regex()?;
+    'diff: for diff in diffs {
+        for re in &exclude {
+            if re.is_match(&diff.key_path().to_string()) { continue 'diff; }
+        }
         match diff {
             Diff::Add(lav) => {
                 if new_section(&mut last_parent1, &lav.loc) { println!() }
@@ -426,6 +452,7 @@ fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) {
             }
         }
     }
+    Ok(())
 }
 
 fn do_diff(opts: &Opts) -> Result<i32> {
@@ -434,7 +461,7 @@ fn do_diff(opts: &Opts) -> Result<i32> {
     let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
     let diffs = find_diffs(opts,&d1,&d2);
-    show_diffs(opts,&diffs);
+    show_diffs(opts,&diffs)?;
     Ok(if diffs.len() == 0 {0} else {1})
 }
 
