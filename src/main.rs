@@ -7,11 +7,13 @@ extern crate diffy;
 extern crate ansi_colors;
 extern crate linked_hash_map;
 extern crate regex;
+extern crate serde;
 
 use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
 use error_chain::ChainedError;
 use linked_hash_map::LinkedHashMap;
+use std::collections::HashMap;
 use std::fmt::{Formatter,Display};
 use std::rc::Rc;
 use std::cmp::max;
@@ -20,6 +22,7 @@ use std::process::exit;
 use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
 use regex::Regex;
+use serde::{Deserialize};
 
 error_chain!{
     foreign_links {
@@ -44,7 +47,9 @@ struct Opts {
     #[clap(short,long,about="Don't produce coloured output")]
     no_colour: bool,
     #[clap(short('x'),long,multiple_occurrences(true),about="Exclude YAML document paths matching regex")]
-    exclude: Vec<String>
+    exclude: Vec<String>,
+    #[clap(short('f'),long,about="Difference strategy file")]
+    strategy: String
 }
 
 impl Opts {
@@ -56,6 +61,37 @@ impl Opts {
         Ok(result)
     }
 }
+
+#[derive(Deserialize)]
+struct Strategy {
+    mapping: Mapping
+}
+
+#[derive(Deserialize)]
+struct Mapping {
+    document: MapDocument
+}
+
+#[derive(Deserialize)]
+struct MapDocument {
+    k8s: Vec<MapDocK8s>
+}
+
+#[derive(Deserialize)]
+struct MapDocK8s {
+    #[serde(rename="groupVersion")]
+    group_version: Option<String>,
+    kind: Option<String>,
+    #[serde(default)]
+    rename: HashMap<String,MapRename>
+}
+
+#[derive(Deserialize)]
+struct MapRename {
+    from: String,
+    to: String
+}
+
 
 /** A string struct that can hold either a borrowed reference or String value */
 enum LzyStr<'a> {
@@ -89,12 +125,12 @@ impl<'a> Display for LzyStr<'a> {
 
 /** Kubernetes metatdata - group, version and kind */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
-struct GRV {
+struct GRK {
     api_version: String,
     kind: String
 }
 
-impl Display for GRV {
+impl Display for GRK {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f,"{},{}",self.api_version,self.kind)
     }
@@ -103,7 +139,7 @@ impl Display for GRV {
 /** Kubernetes metadata - group, version kind plus name & namespace */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
 struct K8SMeta {
-    grv: GRV,
+    grv: GRK,
     name: String,
     namespace: Option<String>
 }
@@ -284,6 +320,36 @@ impl YamlFuncs for Yaml {
     }
 }
 
+impl MapDocument {
+    fn doc_mapping(&self, key: DocKey) -> DocKey {
+        match key {
+            DocKey::K8S(mut meta) => {
+                for mapdoc in &self.k8s {
+                    let mut is_match = true;
+                    if mapdoc.group_version.as_ref() != Some(&meta.grv.api_version) {
+                        continue;
+                    }
+                    if mapdoc.kind.as_ref() != Some(&meta.grv.kind) {
+                        continue;
+                    }
+                    for (item,rename) in &mapdoc.rename {
+                        match item.as_str() {
+                            "name" => {
+                                if meta.name == rename.from {
+                                    meta.name = rename.to.clone();
+                                }
+                            }
+                            _ => ()
+                        }
+                    }
+                }
+                DocKey::K8S(meta)
+            },
+            _ => key
+        }
+    }
+}
+
 fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
     let mut result = Documents::new();
     if opts.k8s {
@@ -293,7 +359,7 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
             let kind = yaml.string_result("kind")?;
             let name = yaml["metadata"].string_result("name")?;
             let namespace = yaml["metadata"]["namespace"].as_str().map(String::from);
-            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRV{api_version,kind}});
+            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
             result.insert(key,yaml);
         }
     } else {
