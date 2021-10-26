@@ -9,6 +9,9 @@ extern crate linked_hash_map;
 extern crate regex;
 extern crate serde;
 
+mod keypath;
+mod error;
+
 use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
 use error_chain::ChainedError;
@@ -23,25 +26,9 @@ use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
 use regex::Regex;
 use serde::{Deserialize};
+use keypath::{ItemKey,KeyPath};
+use error::{ErrorKind,Result,ResultExt};
 
-error_chain!{
-    foreign_links {
-        Io(std::io::Error);
-        Yaml(yaml_rust::ScanError);
-        SerdeYaml(serde_yaml::Error);
-        Regex(regex::Error);
-    }
-    errors {
-        KeyNotFound(key: String) {
-            description("key not found in YAML document, or is wrong type")
-            display("key '{}' not found in YAML document, or is wrong type",key)
-        }
-        UnknownRenameField(field: String) {
-            description("Field found in rename directive is not recognised")
-            display("Unknown field '{}' not found in rename directive",field)
-        }
-    }
-}
 
 #[derive(Parser)]
 struct Opts {
@@ -178,54 +165,6 @@ impl Display for DocKey {
 }
 
 type Documents = LinkedHashMap<DocKey,Yaml>;
-
-/**
- * Component of a path in the document heirarchy. Either an array index
- * or a hash key.
- */
-#[derive(PartialEq,Clone)]
-enum ItemKey {
-    Index(usize),
-    Key(String)
-}
-
-/**
- * A path in the document heirarchy as a vector of path components.
- */
-#[derive(PartialEq,Clone)]
-struct KeyPath(Vec<ItemKey>);
-
-impl KeyPath {
-    fn new() -> KeyPath {
-        KeyPath(Vec::<ItemKey>::new())
-    }
-    fn push(&self,key: ItemKey) -> KeyPath {
-        let mut newvec = self.0.clone();
-        newvec.push(key);
-        KeyPath(newvec)
-    }
-}
-
-impl Display for KeyPath {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut first = true;
-        for item in &self.0 {
-            match item {
-                ItemKey::Index(u) => { write!(f,"[{}]",u)?; }
-                ItemKey::Key(str) => {
-                    let sep = if first {""} else {"."};
-                    if str.contains(".") {
-                        write!(f,"{}[{}]",sep,str)?;
-                    } else {
-                        write!(f,"{}{}",sep,str)?;
-                    }
-                }
-            }
-            first = false
-        }
-        Ok(())
-    }
-}
 
 #[derive(PartialEq,Clone)]
 struct Location<'a> {
