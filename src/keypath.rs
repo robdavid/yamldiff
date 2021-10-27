@@ -191,55 +191,53 @@ impl From<usize> for ItemKey {
     fn set_value<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) -> Result<()> {
         let mut current: &mut Yaml = self;
         let path = path.into();
-        let pathlen = path.0.len();
-        for i in 0..pathlen-1 {
-            match &path.0[i] {
+        let mut iter = path.0.into_iter().peekable();
+        let mut processing = KeyPath::new();
+        while let Some(item) = iter.next() {
+            let item_copy = item.clone();
+            match item {
                 ItemKey::Key(key) => {
                     if let Yaml::Hash(h) = current {
-                        let ykey = Yaml::String(key.clone());
-                        if !h.contains_key(&ykey) {
-                            match &path.0[i+1] {
-                                ItemKey::Key(_) => { h.insert(ykey.clone(),Yaml::Hash(yaml::Hash::new())); }
-                                ItemKey::Index(_) => { h.insert(ykey.clone(),Yaml::Array(yaml::Array::new())); }
+                        match iter.peek() {
+                            None => { 
+                                h.insert(Yaml::String(key),value);
+                                break; 
                             }
-                        } 
-                        current = &mut h[&ykey];
+                            Some(next_item) => {
+                                let ykey = Yaml::String(key);
+                                if !h.contains_key(&ykey) {
+                                    match next_item {
+                                        ItemKey::Key(_) => { h.insert(ykey.clone(),Yaml::Hash(yaml::Hash::new())); }
+                                        ItemKey::Index(_) => { h.insert(ykey.clone(),Yaml::Array(yaml::Array::new())); }
+                                    }
+                                }
+                                current = &mut h[&ykey];
+                            }
+                        }
                     } else {
-                        return Err(ErrorKind::WrongType(path.truncated(i).to_string()).into());
+                        return Err(ErrorKind::WrongType(processing.to_string()).into());
                     }
                 }
                 ItemKey::Index(index) => {
                     if let Yaml::Array(a) = current { 
-                        if *index >= a.len() {
-                            return Err(ErrorKind::InvalidArrayIndex(*index,path.truncated(i).to_string()).into());
+                        if index >= a.len() {
+                            return Err(ErrorKind::InvalidArrayIndex(index,processing.to_string()).into());
                         }
-                        current = &mut a[*index]
+                        match iter.peek() {
+                            None => { 
+                                a[index] = value;
+                                break; 
+                            }
+                            Some(_) => {
+                                current = &mut a[index]
+                            }
+                        }
                     } else { 
-                        return Err(ErrorKind::WrongType(path.truncated(i).to_string()).into());
+                        return Err(ErrorKind::WrongType(processing.to_string()).into());
                     }
                 }
             }
-        }
-        if pathlen > 0 {
-            match &path.0[pathlen-1] {
-                ItemKey::Key(key) => {
-                    if let Yaml::Hash(h) = current { 
-                        h.insert(Yaml::String(key.to_string()),value); 
-                    } else {
-                        return Err(ErrorKind::WrongType(path.truncated(pathlen-1).to_string()).into());
-                    }
-                }
-                ItemKey::Index(index) => {
-                    if let Yaml::Array(a) = current {
-                        if *index >= a.len() {
-                            return Err(ErrorKind::InvalidArrayIndex(*index,path.truncated(pathlen-1).to_string()).into());
-                        }
-                        a[*index] = value; 
-                    } else {
-                        return Err(ErrorKind::WrongType(path.truncated(pathlen-1).to_string()).into());
-                    }
-                }
-            }
+            processing.0.push(item_copy);
         }
         Ok(())
     }
