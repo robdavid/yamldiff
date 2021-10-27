@@ -1,6 +1,8 @@
 use std::fmt::{Formatter,Display};
 use std::fmt;
 use yaml_rust::Yaml;
+use yaml_rust::yaml;
+use crate::error::{Result,ErrorKind};
 
 /**
  * Component of a path in the document heirarchy. Either an array index
@@ -121,6 +123,11 @@ impl From<usize> for ItemKey {
          newvec.push(key);
          KeyPath(newvec)
      }
+     pub fn truncated(&self,len: usize) -> KeyPath {
+         let mut newvec = self.0.clone();
+         newvec.truncate(len);
+         KeyPath(newvec)
+     }
      pub fn parse(pathstr: &str) -> KeyPath {
         let mut ctx = ParseContext::new(pathstr);
         for (i,ch) in pathstr.chars().enumerate() {
@@ -177,32 +184,64 @@ impl From<usize> for ItemKey {
  }
 
  pub trait KeyPathFuncs {
-    fn set_value<T: Into<KeyPath>>(&mut self,path: T, value: Self);
+    fn set_value<T: Into<KeyPath>>(&mut self,path: T, value: Self) -> Result<()>;
  }
 
  impl KeyPathFuncs for Yaml {
-    fn set_value<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) {
+    fn set_value<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) -> Result<()> {
         let mut current: &mut Yaml = self;
         let path = path.into();
         let pathlen = path.0.len();
-        for (i,item) in path.0.into_iter().enumerate() {
-            if i == pathlen-1 {
-                match item {
-                    ItemKey::Key(key) => if let Yaml::Hash(h) = current { h.insert(Yaml::String(key),value); }
-                    ItemKey::Index(index) => if let Yaml::Array(a) = current { a[index] = value; }
+        for i in 0..pathlen-1 {
+            match &path.0[i] {
+                ItemKey::Key(key) => {
+                    if let Yaml::Hash(h) = current {
+                        let ykey = Yaml::String(key.clone());
+                        if !h.contains_key(&ykey) {
+                            match &path.0[i+1] {
+                                ItemKey::Key(_) => { h.insert(ykey.clone(),Yaml::Hash(yaml::Hash::new())); }
+                                ItemKey::Index(_) => { h.insert(ykey.clone(),Yaml::Array(yaml::Array::new())); }
+                            }
+                        } 
+                        current = &mut h[&ykey];
+                    } else {
+                        return Err(ErrorKind::WrongType(path.truncated(i).to_string()).into());
+                    }
                 }
-                break
-            } else {
-                match item {
-                    ItemKey::Key(key) => 
-                        if let Yaml::Hash(h) = current { current = &mut h[&Yaml::String(key)] }
-                        else { return }
-                    ItemKey::Index(index) => 
-                        if let Yaml::Array(a) = current { current = &mut a[index] }
-                        else { return }
+                ItemKey::Index(index) => {
+                    if let Yaml::Array(a) = current { 
+                        if *index >= a.len() {
+                            return Err(ErrorKind::InvalidArrayIndex(*index,path.truncated(i).to_string()).into());
+                        }
+                        current = &mut a[*index]
+                    } else { 
+                        return Err(ErrorKind::WrongType(path.truncated(i).to_string()).into());
+                    }
                 }
             }
         }
+        if pathlen > 0 {
+            match &path.0[pathlen-1] {
+                ItemKey::Key(key) => {
+                    if let Yaml::Hash(h) = current { 
+                        h.insert(Yaml::String(key.to_string()),value); 
+                    } else {
+                        return Err(ErrorKind::WrongType(path.truncated(pathlen-1).to_string()).into());
+                    }
+                }
+                ItemKey::Index(index) => {
+                    if let Yaml::Array(a) = current {
+                        if *index >= a.len() {
+                            return Err(ErrorKind::InvalidArrayIndex(*index,path.truncated(pathlen-1).to_string()).into());
+                        }
+                        a[*index] = value; 
+                    } else {
+                        return Err(ErrorKind::WrongType(path.truncated(pathlen-1).to_string()).into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
  }
  
@@ -271,8 +310,71 @@ impl From<usize> for ItemKey {
         "#;
         let mut y = YamlLoader::load_from_str(yaml).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(123));
-        y[0].set_value("this.is[0].a.deep.path",Yaml::Integer(456));
+        y[0].set_value("this.is[0].a.deep.path",Yaml::Integer(456)).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(456));
     }
+
+    #[test]
+    fn test_set_new_value() {
+        let mut y = Yaml::Hash(yaml::Hash::new());
+        y.set_value("this.is.a.deep.path",Yaml::Integer(456)).unwrap();
+        assert_eq!(y["this"]["is"]["a"]["deep"]["path"],Yaml::Integer(456));
+    }
+
+    #[test]
+    fn test_set_new_bad_array_value() {
+        let mut y = Yaml::Hash(yaml::Hash::new());
+        let result = y.set_value("this_is_array[0]",Yaml::Integer(456));
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!("invalid array index 0 at 'this_is_array' in YAML document",e.to_string());
+        }
+    }
+
+    #[test]
+    fn test_set_new_bad_path_array_value() {
+        let mut y = Yaml::Hash(yaml::Hash::new());
+        let result = y.set_value("this.is.array[0].obj",Yaml::Integer(456));
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!("invalid array index 0 at 'this.is.array' in YAML document",e.to_string());
+        }
+    }
+
+    #[test]
+    fn test_set_bad_path_value() {
+        let yaml = r#"
+        this:
+            is:
+                - a:
+                    deep:
+                        path: 123
+        "#;
+        let mut y = YamlLoader::load_from_str(yaml).unwrap();
+        assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(123));
+        let result = y[0].set_value("this.is[0].a.deep.path.bad",Yaml::Integer(456));
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!("value found at 'this.is[0].a.deep.path' in YAML document is not the correct type",e.to_string());
+        }
+    }
+
+    #[test]
+    fn test_set_bad_mid_path_value() {
+        let yaml = r#"
+        this:
+            is:
+                - a:
+                    deep: 123
+        "#;
+        let mut y = YamlLoader::load_from_str(yaml).unwrap();
+        assert_eq!(y[0]["this"]["is"][0]["a"]["deep"],Yaml::Integer(123));
+        let result = y[0].set_value("this.is[0].a.deep.really.bad",Yaml::Integer(456));
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!("value found at 'this.is[0].a.deep' in YAML document is not the correct type",e.to_string());
+        }
+    }
+
 
 }

@@ -280,7 +280,7 @@ impl MapDocument {
                             "name" => {
                                 if meta.name == rename.from {
                                     meta.name = rename.to.clone();
-                                    yaml.set_value(&["metadata","name"][..],Yaml::from_str(&rename.to))
+                                    yaml.set_value(&["metadata","name"][..],Yaml::from_str(&rename.to))?;
                                 }
                             }
                             _ => return Err(ErrorKind::UnknownRenameField(item.clone()).into())
