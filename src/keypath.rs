@@ -266,7 +266,6 @@ impl From<usize> for ItemKey {
  mod test {
      use super::*;
      use crate::yaml::YamlLoader;
-     use crate::serde_yaml::Error;
 
      #[test]
      fn test_parse_string_keys() {
