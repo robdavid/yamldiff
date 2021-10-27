@@ -26,7 +26,7 @@ use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
 use regex::Regex;
 use serde::{Deserialize};
-use keypath::{ItemKey,KeyPath};
+use keypath::{ItemKey,KeyPath,KeyPathFuncs};
 use error::{ErrorKind,Result,ResultExt};
 
 
@@ -246,7 +246,6 @@ trait YamlFuncs {
     fn str_result(&self, key: &str) -> Result<&str>;
     fn string_result(&self, key: &str) -> Result<String>;
     fn is_hash(&self) -> bool;
-    fn set_value(&mut self, path: &[&str], value: Yaml);
 }
 
 impl YamlFuncs for Yaml {
@@ -261,21 +260,6 @@ impl YamlFuncs for Yaml {
         match self {
             Yaml::Hash(_) => true,
             _ =>             false
-        }
-    }
-    fn set_value(&mut self, path: &[&str], value: Yaml) {
-        let mut current: &mut Yaml = self;
-        for i in 0..path.len() {
-            if let Yaml::Hash(h) = current {
-                if i == path.len()-1 {
-                    h.insert(Yaml::String(path[i].to_string()),value.clone());
-                    break;
-                } else {
-                    current = &mut h[&Yaml::from_str(path[i])];
-                }
-            } else {
-                break;
-            }
         }
     }
 }
@@ -296,7 +280,7 @@ impl MapDocument {
                             "name" => {
                                 if meta.name == rename.from {
                                     meta.name = rename.to.clone();
-                                    yaml.set_value(&["metadata","name"],Yaml::from_str(&rename.to))
+                                    yaml.set_value(&["metadata","name"][..],Yaml::from_str(&rename.to))
                                 }
                             }
                             _ => return Err(ErrorKind::UnknownRenameField(item.clone()).into())

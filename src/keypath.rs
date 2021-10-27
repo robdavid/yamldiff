@@ -1,5 +1,6 @@
 use std::fmt::{Formatter,Display};
 use std::fmt;
+use yaml_rust::Yaml;
 
 /**
  * Component of a path in the document heirarchy. Either an array index
@@ -140,7 +141,20 @@ impl From<usize> for ItemKey {
          KeyPath(Vec::<ItemKey>::from(items))
      }
  }
+
+ impl From<&str> for KeyPath {
+     fn from(path: &str) -> KeyPath {
+         KeyPath::parse(path)
+     }
+ }
  
+ impl From<&[&str]> for KeyPath {
+    fn from(path: &[&str]) -> KeyPath {
+         let keys = path.iter().map(|key| ItemKey::from(*key)).collect();
+         KeyPath(keys)
+    }
+ }
+
  impl Display for KeyPath {
      fn fmt(&self, f: &mut Formatter) -> fmt::Result {
          let mut first = true;
@@ -161,10 +175,41 @@ impl From<usize> for ItemKey {
          Ok(())
      }
  }
+
+ pub trait KeyPathFuncs {
+    fn set_value<T: Into<KeyPath>>(&mut self,path: T, value: Self);
+ }
+
+ impl KeyPathFuncs for Yaml {
+    fn set_value<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) {
+        let mut current: &mut Yaml = self;
+        let path = path.into();
+        let pathlen = path.0.len();
+        for (i,item) in path.0.into_iter().enumerate() {
+            if i == pathlen-1 {
+                match item {
+                    ItemKey::Key(key) => if let Yaml::Hash(h) = current { h.insert(Yaml::String(key),value); }
+                    ItemKey::Index(index) => if let Yaml::Array(a) = current { a[index] = value; }
+                }
+                break
+            } else {
+                match item {
+                    ItemKey::Key(key) => 
+                        if let Yaml::Hash(h) = current { current = &mut h[&Yaml::String(key)] }
+                        else { return }
+                    ItemKey::Index(index) => 
+                        if let Yaml::Array(a) = current { current = &mut a[index] }
+                        else { return }
+                }
+            }
+        }
+    }
+ }
  
  #[cfg(test)]
  mod test {
      use super::*;
+     use crate::yaml::YamlLoader;
 
      #[test]
      fn test_parse_string_keys() {
@@ -213,6 +258,21 @@ impl From<usize> for ItemKey {
         let kp = KeyPath::parse("apple.banana.coconut[0]date[1]");
         let expected: &[ItemKey] = &[ItemKey::from("apple"),ItemKey::from("banana"),ItemKey::from("coconut0date"),ItemKey::from(1)];
         assert_eq!(KeyPath::from(expected),kp);
+    }
+
+    #[test]
+    fn test_set_value() {
+        let yaml = r#"
+        this:
+            is:
+                - a:
+                    deep:
+                        path: 123
+        "#;
+        let mut y = YamlLoader::load_from_str(yaml).unwrap();
+        assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(123));
+        y[0].set_value("this.is[0].a.deep.path",Yaml::Integer(456));
+        assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(456));
     }
 
 }
