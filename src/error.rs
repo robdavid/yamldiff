@@ -1,3 +1,6 @@
+use serde_yaml;
+use regex;
+
 error_chain!{
     foreign_links {
         Io(std::io::Error);

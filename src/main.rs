@@ -8,15 +8,16 @@ extern crate ansi_colors;
 extern crate linked_hash_map;
 extern crate regex;
 extern crate serde;
+extern crate serde_yaml;
 
 mod keypath;
 mod error;
+mod strategy;
 
 use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
 use error_chain::ChainedError;
 use linked_hash_map::LinkedHashMap;
-use std::collections::HashMap;
 use std::fmt::{Formatter,Display};
 use std::rc::Rc;
 use std::cmp::max;
@@ -25,9 +26,9 @@ use std::process::exit;
 use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
 use regex::Regex;
-use serde::{Deserialize};
-use keypath::{ItemKey,KeyPath,KeyPathFuncs};
+use keypath::{ItemKey,KeyPath};
 use error::{ErrorKind,Result,ResultExt};
+use strategy::Strategy;
 
 
 #[derive(Parser)]
@@ -52,36 +53,6 @@ impl Opts {
         }
         Ok(result)
     }
-}
-
-#[derive(Deserialize)]
-struct Strategy {
-    mapping: Mapping
-}
-
-#[derive(Deserialize)]
-struct Mapping {
-    document: MapDocument
-}
-
-#[derive(Deserialize)]
-struct MapDocument {
-    k8s: Vec<MapDocK8s>
-}
-
-#[derive(Deserialize)]
-struct MapDocK8s {
-    #[serde(rename="groupVersion")]
-    group_version: Option<String>,
-    kind: Option<String>,
-    #[serde(default)]
-    rename: HashMap<String,MapRename>
-}
-
-#[derive(Deserialize)]
-struct MapRename {
-    from: String,
-    to: String
 }
 
 
@@ -264,45 +235,7 @@ impl YamlFuncs for Yaml {
     }
 }
 
-impl MapDocument {
-    fn doc_mapping(&self, key: DocKey, yaml: &mut Yaml) -> Result<DocKey> {
-        match key {
-            DocKey::K8S(mut meta) => {
-                for mapdoc in &self.k8s {
-                    if mapdoc.group_version.as_ref() != Some(&meta.grv.api_version) {
-                        continue;
-                    }
-                    if mapdoc.kind.as_ref() != Some(&meta.grv.kind) {
-                        continue;
-                    }
-                    for (item,rename) in &mapdoc.rename {
-                        match item.as_str() {
-                            "name" => {
-                                if meta.name == rename.from {
-                                    meta.name = rename.to.clone();
-                                    yaml.set_value(&["metadata","name"][..],Yaml::from_str(&rename.to))?;
-                                }
-                            }
-                            _ => return Err(ErrorKind::UnknownRenameField(item.clone()).into())
-                        }
-                    }
-                }
-                Ok(DocKey::K8S(meta))
-            },
-            _ => Ok(key)
-        }
-    }
-}
-
 fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
-    let map_doc = match &opts.strategy {
-        Some(fname) => {
-            let yaml = fs::read_to_string(fname)?;
-            let strategy : Strategy = serde_yaml::from_str(&yaml)?;
-            Some(strategy.mapping.document)
-        },
-        _ => None
-    };
     let mut result = Documents::new();
     if opts.k8s {
         for mut yaml in docs {
@@ -313,13 +246,8 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
             if let Yaml::Hash(ref mut md) = &mut yaml {
                 md.insert(Yaml::String("name".to_string()),Yaml::String("myvalue".to_string()));
             }
-            
             let namespace = yaml["metadata"]["namespace"].as_str().map(String::from);
-            let mut key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
-            match &map_doc {
-                Some(md) => { key = md.doc_mapping(key,&mut yaml)?; }
-                None => ()
-            }
+            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
             result.insert(key,yaml);
         }
     } else {
@@ -490,9 +418,26 @@ fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) -> Result<()> {
     Ok(())
 }
 
+fn transform_docs(opts: &Opts, y1: &mut Vec<Yaml>, y2: &mut Vec<Yaml>) -> Result<()> {
+    if let Some(fname) = &opts.strategy {
+        let yaml = fs::read_to_string(fname)?;
+        let strategy = Strategy::from_str(&yaml)?;
+        for (i,y) in y1.iter_mut().enumerate() {
+            strategy.transform(y,false)
+                .chain_err(|| format!("while transforming document {} of {}",i+1,opts.file1))?;
+        }
+        for (i,y) in y2.iter_mut().enumerate() {
+            strategy.transform(y,true)
+                .chain_err(|| format!("while transforming document {} of {}",i+1,opts.file2))?;
+        }
+    }
+    Ok(())
+}
+
 fn do_diff(opts: &Opts) -> Result<i32> {
-    let y1 = load_file(&opts.file1)?;
-    let y2 = load_file(&opts.file2)?;
+    let mut y1 = load_file(&opts.file1)?;
+    let mut y2 = load_file(&opts.file2)?;
+    transform_docs(opts, &mut y1, &mut y2)?;
     let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
     let diffs = find_diffs(opts,&d1,&d2);

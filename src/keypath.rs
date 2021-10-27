@@ -123,6 +123,7 @@ impl From<usize> for ItemKey {
          newvec.push(key);
          KeyPath(newvec)
      }
+     #[allow(unused)]
      pub fn truncated(&self,len: usize) -> KeyPath {
          let mut newvec = self.0.clone();
          newvec.truncate(len);
@@ -183,12 +184,13 @@ impl From<usize> for ItemKey {
      }
  }
 
- pub trait KeyPathFuncs {
-    fn set_value<T: Into<KeyPath>>(&mut self,path: T, value: Self) -> Result<()>;
+ pub trait KeyPathFuncs where Self: std::marker::Sized {
+    fn set_at_path<T: Into<KeyPath>>(&mut self,path: T, value: Self) -> Result<()>;
+    fn get_at_path<T: Into<KeyPath>>(&self,path: T) -> Result<&Self>;
  }
 
  impl KeyPathFuncs for Yaml {
-    fn set_value<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) -> Result<()> {
+    fn set_at_path<T: Into<KeyPath>>(&mut self, path: T, value: Yaml) -> Result<()> {
         let mut current: &mut Yaml = self;
         let path = path.into();
         let mut iter = path.0.into_iter().peekable();
@@ -241,12 +243,30 @@ impl From<usize> for ItemKey {
         }
         Ok(())
     }
+
+    fn get_at_path<T: Into<KeyPath>>(&self, path: T) -> Result<&Yaml> {
+        let path = path.into();
+        let mut processed_path = KeyPath::new();
+        let mut result = self;
+        for item in path.0 {
+            processed_path.0.push(item.clone());
+            match item {
+                ItemKey::Key(key) => { result = &result[key.as_str()]; }
+                ItemKey::Index(index) => { result = &result[index]; }
+            }
+            if result.is_badvalue() {
+                return Err(ErrorKind::KeyNotFound(processed_path.to_string()).into())
+            }
+        }
+        Ok(result)
+    }
  }
  
  #[cfg(test)]
  mod test {
      use super::*;
      use crate::yaml::YamlLoader;
+     use crate::serde_yaml::Error;
 
      #[test]
      fn test_parse_string_keys() {
@@ -308,21 +328,21 @@ impl From<usize> for ItemKey {
         "#;
         let mut y = YamlLoader::load_from_str(yaml).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(123));
-        y[0].set_value("this.is[0].a.deep.path",Yaml::Integer(456)).unwrap();
+        y[0].set_at_path("this.is[0].a.deep.path",Yaml::Integer(456)).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(456));
     }
 
     #[test]
     fn test_set_new_value() {
         let mut y = Yaml::Hash(yaml::Hash::new());
-        y.set_value("this.is.a.deep.path",Yaml::Integer(456)).unwrap();
+        y.set_at_path("this.is.a.deep.path",Yaml::Integer(456)).unwrap();
         assert_eq!(y["this"]["is"]["a"]["deep"]["path"],Yaml::Integer(456));
     }
 
     #[test]
     fn test_set_new_bad_array_value() {
         let mut y = Yaml::Hash(yaml::Hash::new());
-        let result = y.set_value("this_is_array[0]",Yaml::Integer(456));
+        let result = y.set_at_path("this_is_array[0]",Yaml::Integer(456));
         assert!(result.is_err());
         if let Err(e) = result {
             assert_eq!("invalid array index 0 at 'this_is_array' in YAML document",e.to_string());
@@ -332,7 +352,7 @@ impl From<usize> for ItemKey {
     #[test]
     fn test_set_new_bad_path_array_value() {
         let mut y = Yaml::Hash(yaml::Hash::new());
-        let result = y.set_value("this.is.array[0].obj",Yaml::Integer(456));
+        let result = y.set_at_path("this.is.array[0].obj",Yaml::Integer(456));
         assert!(result.is_err());
         if let Err(e) = result {
             assert_eq!("invalid array index 0 at 'this.is.array' in YAML document",e.to_string());
@@ -350,7 +370,7 @@ impl From<usize> for ItemKey {
         "#;
         let mut y = YamlLoader::load_from_str(yaml).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"]["path"],Yaml::Integer(123));
-        let result = y[0].set_value("this.is[0].a.deep.path.bad",Yaml::Integer(456));
+        let result = y[0].set_at_path("this.is[0].a.deep.path.bad",Yaml::Integer(456));
         assert!(result.is_err());
         if let Err(e) = result {
             assert_eq!("value found at 'this.is[0].a.deep.path' in YAML document is not the correct type",e.to_string());
@@ -367,12 +387,42 @@ impl From<usize> for ItemKey {
         "#;
         let mut y = YamlLoader::load_from_str(yaml).unwrap();
         assert_eq!(y[0]["this"]["is"][0]["a"]["deep"],Yaml::Integer(123));
-        let result = y[0].set_value("this.is[0].a.deep.really.bad",Yaml::Integer(456));
+        let result = y[0].set_at_path("this.is[0].a.deep.really.bad",Yaml::Integer(456));
         assert!(result.is_err());
         if let Err(e) = result {
             assert_eq!("value found at 'this.is[0].a.deep' in YAML document is not the correct type",e.to_string());
         }
     }
 
+    #[test]
+    fn test_get_path_value() {
+        let yaml = r#"
+        this:
+            is:
+                - a:
+                    deep:
+                        path: 123
+        "#;
+        let y = YamlLoader::load_from_str(yaml).unwrap();
+        let result = y[0].get_at_path("this.is[0].a.deep.path").unwrap();
+        assert_eq!(Yaml::Integer(123),*result);
+    }
+
+    #[test]
+    fn test_get_bad_path_value() {
+        let yaml = r#"
+        this:
+            is:
+                - a:
+                    deep:
+                        path: 123
+        "#;
+        let y = YamlLoader::load_from_str(yaml).unwrap();
+        let result = y[0].get_at_path("this.is[0].a.steep.path");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!("key 'this.is[0].a.steep' not found in YAML document, or is wrong type",e.to_string());
+        }
+    }
 
 }
