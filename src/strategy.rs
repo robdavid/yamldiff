@@ -2,6 +2,7 @@ use serde::{Deserialize};
 use yaml_rust::Yaml;
 use crate::error::{Result};
 use crate::keypath::{KeyPathFuncs};
+use regex::Regex;
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 pub struct Strategy {
@@ -14,13 +15,15 @@ struct Transform {
     #[serde(default)]
     original: Vec<TransformSpec>,
     #[serde(default)]
-    modified: Vec<TransformSpec>
+    modified: Vec<TransformSpec>,
+    #[serde(default)]
+    both: Vec<TransformSpec>
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 struct TransformSpec {
     #[serde(default)]
-    select: Vec<YamlPathAndValue>,
+    select: Vec<TransformSelect>,
     #[serde(default)]
     replace: Vec<ReplaceTransform>,
     #[serde(default)]
@@ -42,6 +45,19 @@ enum YamlValue {
 struct YamlPathAndValue {
     path: String,
     value: YamlValue
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+#[serde(untagged)]
+enum TransformSelect {
+    Value {
+        path: String,
+        value: YamlValue
+    },
+    Regex {
+        path: String,
+        regex: String
+    }
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
@@ -78,18 +94,36 @@ impl YamlValue {
 }
 
 impl TransformSpec {
-    fn select(&self,y: &Yaml) -> bool {
+    fn select(&self,y: &Yaml) -> Result<bool> {
         for select in &self.select {
-            match y.get_at_path(select.path.as_str()) {
-                Err(_) => { return false; }
-                Ok(val) => {
-                    if !select.value.equal_yaml(val) {
-                        return false;
+            match select {
+                TransformSelect::Value {path,value} => {
+                    match y.get_at_path(path.as_str()) {
+                        Err(_) => { return Ok(false); }
+                        Ok(val) => {
+                            if !value.equal_yaml(val) {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+                TransformSelect::Regex {path,regex} => {
+                    match y.get_at_path(path.as_str()) {
+                        Err(_) => { return Ok(false); }
+                        Ok(val) => {
+                            let re = Regex::new(regex)?;
+                            match val {
+                                Yaml::String(text) => {
+                                    if !re.is_match(text) { return Ok(false);}
+                                }
+                                _ => { return Ok(false) }
+                            }
+                        }
                     }
                 }
             }
         }
-        true
+        Ok(true)
     }
     fn apply_replace(&self,y: &mut Yaml) -> Result<()> {
         for replace in &self.replace {
@@ -106,6 +140,23 @@ impl TransformSpec {
         }
         Ok(())
     }
+    fn apply_drop(&self, y: &mut Yaml) -> bool{
+        if self.drop {
+            *y = Yaml::Null;
+            true
+        } else {
+            false
+        }
+    }
+    fn apply(&self, y: &mut Yaml) -> Result<()> {
+        if self.select(y)? {
+            if !self.apply_drop(y) {
+                self.apply_replace(y)?;
+                self.apply_set(y)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Strategy {
@@ -114,12 +165,8 @@ impl Strategy {
     }
     pub fn transform(&self,y: &mut Yaml, modified: bool) -> Result<()> {
         let transforms = if modified {&self.transform.modified} else {&self.transform.original};
-        for transform in transforms {
-            if transform.select(y) {
-                transform.apply_replace(y)?;
-                transform.apply_set(y)?;
-            }
-        }
+        for transform in transforms { transform.apply(y)?; }
+        for transform in &self.transform.both { transform.apply(y)?; }
         Ok(())
     }
 }
@@ -149,7 +196,12 @@ mod test {
         "#;
         let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
         assert_eq!(1,strategy.transform.original.len());
-        assert_eq!("kind",strategy.transform.original[0].select[0].path);
+        if let TransformSelect::Value{path,value} = &strategy.transform.original[0].select[0] {
+            assert_eq!("kind",path);
+            assert_eq!(YamlValue::String("Deployment".to_string()),*value);
+        } else {
+            panic!("Incorrect select type");
+        }
         assert_eq!(YamlValue::Integer(1),strategy.transform.original[0].replace[1].value);
     }
 }
