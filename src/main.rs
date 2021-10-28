@@ -165,6 +165,7 @@ impl<'a> Location<'a> {
     }
 }
 
+#[derive(Clone)]
 struct LocationAndValue<'a> {
     loc: Location<'a>,
     value: Yaml
@@ -182,6 +183,7 @@ impl<'a> Display for LocationAndValue<'a> {
     }
 }
 
+#[derive(Clone)]
 enum Diff<'a> {
     Add(LocationAndValue<'a>),
     Remove(LocationAndValue<'a>),
@@ -262,7 +264,13 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
 
 type Diffs<'a> = Vec<Diff<'a>>;
 
-fn recurse_array_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+struct DiffContext<'a> {
+    opts: &'a Opts,
+    dockey: Option<Rc<DocKey>>,
+    diffs: Diffs<'a>
+}
+
+fn recurse_array_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
     let empty = Vec::<Yaml>::new();
     let null_yaml = Yaml::Null;
     let arr1 = y1.as_vec().unwrap_or(&empty);
@@ -271,16 +279,16 @@ fn recurse_array_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs
     for i in 0..max_len {
         let v1 = if i < arr1.len() { &arr1[i] } else { &null_yaml };
         let v2 = if i < arr2.len() { &arr2[i] } else { &null_yaml };
-        recurse_diffs(opts, dockey.clone(), diffs, path.push(ItemKey::Index(i)), v1, v2);
+        recurse_diffs(ctx, path.push(ItemKey::Index(i)), v1, v2);
     }
     if !y1.is_array() {
-        recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+        recurse_diffs(ctx, path, y1, &null_yaml);
     } else if !y2.is_array() {
-        recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+        recurse_diffs(ctx, path, &null_yaml,y2);
     }
 }
 
-fn recurse_hash_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+fn recurse_hash_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
     let empty = yaml::Hash::new();
     let null_yaml = Yaml::Null;
     let hash1 = y1.as_hash().unwrap_or(&empty);
@@ -289,54 +297,56 @@ fn recurse_hash_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<
         let v1 = &hash1[key];
         let v2 = if hash2.contains_key(key) { &hash2[key] } else { &null_yaml };
         let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-        recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), v1, v2);
+        recurse_diffs(ctx, path.push(next_key), v1, v2);
     }
     for key in hash2.keys() {
         let v2 = &hash2[key];
         if !hash1.contains_key(key) {
             let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-            recurse_diffs(opts, dockey.clone(), diffs, path.push(next_key), &null_yaml, v2);
+            recurse_diffs(ctx, path.push(next_key), &null_yaml, v2);
         }
     }
     if !y1.is_hash() {
-        recurse_diffs(opts, dockey, diffs, path, y1, &null_yaml);
+        recurse_diffs(ctx, path, y1, &null_yaml);
     } else if !y2.is_hash() {
-        recurse_diffs(opts, dockey, diffs, path, &null_yaml,y2);
+        recurse_diffs(ctx, path, &null_yaml,y2);
     }
 }
  
-fn recurse_diffs<'a>(opts: &'a Opts, dockey: Rc<DocKey>, diffs: &mut Diffs<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+fn recurse_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
     if y1.is_array() || y2.is_array() {
-        recurse_array_diffs(opts, dockey, diffs, path, y1, y2);
+        recurse_array_diffs(ctx, path, y1, y2);
     } else if y1.is_hash() || y2.is_hash() {
-        recurse_hash_diffs(opts, dockey, diffs, path, y1, y2);
+        recurse_hash_diffs(ctx, path, y1, y2);
     } else if y1.is_null() && !y2.is_null() {
-        diffs.push(Diff::add(&opts.file2,dockey,path,y2))
+        ctx.diffs.push(Diff::add(&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y2))
     } else if !y1.is_null() && y2.is_null() {
-        diffs.push(Diff::remove(&opts.file1,dockey,path,y1))
+        ctx.diffs.push(Diff::remove(&ctx.opts.file1,ctx.dockey.clone().unwrap(),path,y1))
     } else if *y1 != *y2 {
-        diffs.push(Diff::differ(&opts.file1,&opts.file2,dockey,path,y1,y2))
+        ctx.diffs.push(Diff::differ(&ctx.opts.file1,&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y1,y2))
     }
 }
 
 fn find_diffs<'a>(opts: &'a Opts, d1 : &Documents, d2: &Documents) -> Diffs<'a> {
-    let mut diffs = Diffs::new();
     let null_yaml = Yaml::Null;
+    let mut ctx = DiffContext{opts,dockey: None,diffs: Diffs::new()};
     for key in d1.keys() {
         let path = KeyPath::new();
+        ctx.dockey = Some(Rc::new(key.clone()));
         if d2.contains_key(key) {
-            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&d1[key],&d2[key])
+            recurse_diffs(&mut ctx,path,&d1[key],&d2[key])
         } else {
-            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&d1[key],&null_yaml)
+            recurse_diffs(&mut ctx,path,&d1[key],&null_yaml)
         }
     }
     for key in d2.keys() {
         if !d1.contains_key(key) {
             let path = KeyPath::new();
-            recurse_diffs(opts, Rc::new((*key).clone()), &mut diffs,path,&null_yaml,&d2[key])
+            ctx.dockey = Some(Rc::new(key.clone()));
+            recurse_diffs(&mut ctx,path,&null_yaml,&d2[key])
         }
     }
-    diffs
+    ctx.diffs
 }
 
 fn new_section<'a>(parent: &mut Option<Location<'a>>, location: &Location<'a>) -> bool {
@@ -374,13 +384,16 @@ fn print_location_and_value<'a>(opts: &Opts, lav: &LocationAndValue<'a>,remove: 
     }
 }
 
-fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) -> Result<()> {
+fn show_diffs<'a>(opts: &Opts, strategy: &Option<Strategy>, diffs: &Diffs<'a>) -> Result<()> {
     let mut last_parent1: Option<Location<'a>> = None;
     let mut last_parent2: Option<Location<'a>> = None;
     let exclude = opts.exclude_regex()?;
     'diff: for diff in diffs {
         for re in &exclude {
             if re.is_match(&diff.key_path().to_string()) { continue 'diff; }
+        }
+        if let Some(strategy) = strategy {
+            if !strategy.filter_accept(&diff.key_path())? { continue 'diff; }
         }
         match diff {
             Diff::Add(lav) => {
@@ -418,10 +431,8 @@ fn show_diffs<'a>(opts: &Opts, diffs: &Diffs<'a>) -> Result<()> {
     Ok(())
 }
 
-fn transform_docs(opts: &Opts, y1: &mut Vec<Yaml>, y2: &mut Vec<Yaml>) -> Result<()> {
-    if let Some(fname) = &opts.strategy {
-        let yaml = fs::read_to_string(fname)?;
-        let strategy = Strategy::from_str(&yaml)?;
+fn transform_docs(opts: &Opts, strategy: &Option<Strategy>, y1: &mut Vec<Yaml>, y2: &mut Vec<Yaml>) -> Result<()> {
+    if let Some(strategy) = strategy {
         for (i,y) in y1.iter_mut().enumerate() {
             strategy.transform(y,false)
                 .chain_err(|| format!("while transforming document {} of {}",i+1,opts.file1))?;
@@ -435,13 +446,20 @@ fn transform_docs(opts: &Opts, y1: &mut Vec<Yaml>, y2: &mut Vec<Yaml>) -> Result
 }
 
 fn do_diff(opts: &Opts) -> Result<i32> {
+    let strategy = match &opts.strategy {
+        None => None,
+        Some(fname) => {
+            let yaml = fs::read_to_string(fname)?;
+            Some(Strategy::from_str(&yaml)?)
+        }
+    };
     let mut y1 = load_file(&opts.file1)?;
     let mut y2 = load_file(&opts.file2)?;
-    transform_docs(opts, &mut y1, &mut y2)?;
+    transform_docs(opts, &strategy, &mut y1, &mut y2)?;
     let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
     let diffs = find_diffs(opts,&d1,&d2);
-    show_diffs(opts,&diffs)?;
+    show_diffs(opts,&strategy,&diffs)?;
     Ok(if diffs.len() == 0 {0} else {1})
 }
 

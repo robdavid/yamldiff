@@ -1,12 +1,15 @@
 use serde::{Deserialize};
 use yaml_rust::Yaml;
 use crate::error::{Result};
-use crate::keypath::{KeyPathFuncs};
+use crate::keypath::{KeyPathFuncs,KeyPath};
 use regex::Regex;
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 pub struct Strategy {
-    transform: Transform
+    #[serde(default)]
+    transform: Option<Transform>,
+    #[serde(default)]
+    filter: Option<FilterSpec>
 }
 
 
@@ -65,6 +68,23 @@ struct ReplaceTransform {
     path: String,
     value: YamlValue,
     with: YamlValue
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+#[serde(untagged)]
+enum FilterRule {
+    PathRegex {
+        #[serde(rename="pathRegex")]
+        path_regex: String
+    }
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+struct FilterSpec {
+    #[serde(default)]
+    include: Vec<FilterRule>,
+    #[serde(default)]
+    exclude: Vec<FilterRule>
 }
 
 impl YamlValue {
@@ -159,15 +179,54 @@ impl TransformSpec {
     }
 }
 
+impl FilterRule {
+    fn accept(&self, path: &KeyPath) -> Result<bool> {
+        match self {
+            FilterRule::PathRegex{path_regex} => {
+                let re = Regex::new(path_regex)?;
+                Ok(re.is_match(path.to_string().as_str()))
+            }
+        }
+    }
+}
+
+impl FilterSpec {
+    fn accept(&self, path: &KeyPath) -> Result<bool> {
+        let mut accepted = self.include.is_empty();
+        for rule in &self.include {
+            if rule.accept(path)? { 
+                accepted = true;
+                break;
+            }
+        }
+        if accepted {
+            for rule in &self.exclude {
+                if rule.accept(path)? {
+                    accepted = false;
+                    break;
+                }
+            }
+        }
+        Ok(accepted)
+    }
+}
 impl Strategy {
     pub fn from_str(text: &str) -> Result<Strategy> {
         Ok(serde_yaml::from_str(&text)?)
     }
     pub fn transform(&self,y: &mut Yaml, modified: bool) -> Result<()> {
-        let transforms = if modified {&self.transform.modified} else {&self.transform.original};
-        for transform in transforms { transform.apply(y)?; }
-        for transform in &self.transform.both { transform.apply(y)?; }
+        if let Some(transform) = &self.transform {
+            let transforms = if modified {&transform.modified} else {&transform.original};
+            for transform in transforms { transform.apply(y)?; }
+            for transform in &transform.both { transform.apply(y)?; }
+        }
         Ok(())
+    }
+    pub fn filter_accept(&self, path: &KeyPath) -> Result<bool> {
+        match &self.filter {
+            None => Ok(true),
+            Some(filter) => filter.accept(path)
+        }
     }
 }
 
@@ -195,13 +254,18 @@ mod test {
                   value: "production"
         "#;
         let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
-        assert_eq!(1,strategy.transform.original.len());
-        if let TransformSelect::Value{path,value} = &strategy.transform.original[0].select[0] {
-            assert_eq!("kind",path);
-            assert_eq!(YamlValue::String("Deployment".to_string()),*value);
-        } else {
-            panic!("Incorrect select type");
+        match &strategy.transform {
+            Some(transform) => {
+                assert_eq!(1,transform.original.len());
+                if let TransformSelect::Value{path,value} = &transform.original[0].select[0] {
+                    assert_eq!("kind",path);
+                    assert_eq!(YamlValue::String("Deployment".to_string()),*value);
+                } else {
+                    panic!("Incorrect select type");
+                }
+                assert_eq!(YamlValue::Integer(1),transform.original[0].replace[1].value);
+            },
+            None => panic!("Transform has not been set")
         }
-        assert_eq!(YamlValue::Integer(1),strategy.transform.original[0].replace[1].value);
     }
 }
