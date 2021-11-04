@@ -67,7 +67,7 @@ enum TransformSelect {
 struct ReplaceTransform {
     path: String,
     value: YamlValue,
-    with: YamlValue
+    with: Option<YamlValue>
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
@@ -149,7 +149,10 @@ impl TransformSpec {
         for replace in &self.replace {
             let current = y.get_at_path(replace.path.as_str())?;
             if replace.value.equal_yaml(current) {
-                y.set_at_path(replace.path.as_str(),replace.with.to_yaml())?;
+                match &replace.with {
+                    Some(yml) => { y.set_at_path(replace.path.as_str(),yml.to_yaml())?; }
+                    None      => { y.set_at_path(replace.path.as_str(),Yaml::Null)?; }
+                }
             }
         }   
         Ok(())
