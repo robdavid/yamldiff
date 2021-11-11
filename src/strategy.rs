@@ -87,7 +87,12 @@ struct FilterSpec {
     exclude: Vec<FilterRule>
 }
 
-impl YamlValue {
+trait ConvYaml {
+    fn equal_yaml(&self,y: &Yaml) -> bool;
+    fn to_yaml(&self) -> Yaml;
+}
+
+impl ConvYaml for YamlValue {
     fn equal_yaml(&self,y: &Yaml) -> bool {
         match self {
             YamlValue::String(s1) => {
@@ -109,6 +114,22 @@ impl YamlValue {
             YamlValue::Boolean(b) => Yaml::Boolean(*b),
             YamlValue::Float(f)   => Yaml::Real(f.to_string()),
             YamlValue::Integer(i) => Yaml::Integer(*i)
+        }
+    }
+}
+
+impl ConvYaml for Option<YamlValue> {
+    fn equal_yaml(&self,y: &Yaml) -> bool {
+        match self {
+            Some(val) => val.equal_yaml(y),
+            None      => *y == Yaml::Null
+        }
+    }
+
+    fn to_yaml(&self) -> Yaml {
+        match self {
+            Some(val) => val.to_yaml(),
+            None      => Yaml::Null
         }
     }
 }
@@ -149,10 +170,7 @@ impl TransformSpec {
         for replace in &self.replace {
             let current = y.get_at_path(replace.path.as_str())?;
             if replace.value.equal_yaml(current) {
-                match &replace.with {
-                    Some(yml) => { y.set_at_path(replace.path.as_str(),yml.to_yaml())?; }
-                    None      => { y.set_at_path(replace.path.as_str(),Yaml::Null)?; }
-                }
+                y.set_at_path(replace.path.as_str(),replace.with.to_yaml())?;
             }
         }   
         Ok(())
