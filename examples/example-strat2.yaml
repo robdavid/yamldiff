@@ -1,0 +1,12 @@
+transform:
+  original:
+    - select:
+        - path: "kind"
+          value: "ConfigMap"
+      replace:
+        - path: "metadata.name"
+          value: "c47-esblite-test"
+          with: "esblite-c47-test"
+      set:
+        - path: "metadata.namespace"
+          value: "sandbox"

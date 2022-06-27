@@ -1,0 +1,10 @@
+transform:
+  both:
+    - select:
+        - path: "kind"
+          regex: ".+"
+      drop: true
+      replace:
+        - path: "metadata.name"
+          value: "vault1-agent-injector"
+          with: "vault2-agent-injector"

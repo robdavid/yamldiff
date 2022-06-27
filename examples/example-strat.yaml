@@ -1,0 +1,15 @@
+mapping:
+  document:
+    k8s:
+      - groupVersion: v1
+        kind: ServiceAccount
+        rename:
+          name:
+            from: "vault1"
+            to: "vault2"
+      - groupVersion: v1
+        kind: ServiceAccount
+        rename:
+          name:
+            from: "vault1-agent-injector"
+            to: "vault2-agent-injector"
