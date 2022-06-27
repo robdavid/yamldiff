@@ -3,8 +3,23 @@ transform:
     - select:
         - path: "kind"
           regex: ".+"
-      drop: true
+      drop: false
       replace:
         - path: "metadata.name"
           value: "vault1-agent-injector"
           with: "vault2-agent-injector"
+        - path: "metadata.name"
+          value: "vault1-agent-injector-cfg"
+          with: "vault2-agent-injector-cfg"
+        - path: "metadata.name"
+          value: "vault1-agent-injector-svc"
+          with: "vault2-agent-injector-svc"
+        - path: "metadata.name"
+          value: "vault1-server-test"
+          with: "vault2-server-test"
+        - path: "metadata.name"
+          value: "vault1"
+          with: "vault2"
+        - path: "metadata.name"
+          value: "vault1-internal"
+          with: "vault2-internal"

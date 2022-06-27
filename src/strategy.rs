@@ -231,6 +231,7 @@ impl FilterSpec {
         Ok(accepted)
     }
 }
+
 impl Strategy {
     pub fn from_str(text: &str) -> Result<Strategy> {
         Ok(serde_yaml::from_str(&text)?)

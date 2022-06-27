@@ -1,12 +1,11 @@
 extern crate yaml_rust;
-//#[macro_use]
-extern crate clap;
 extern crate diffy;
 extern crate ansi_colors;
 extern crate linked_hash_map;
 extern crate regex;
 extern crate serde;
 extern crate serde_yaml;
+extern crate clap;
 
 pub use yaml_rust::{YamlLoader,Yaml,yaml};
 use clap::Parser;
@@ -27,13 +26,13 @@ use crate:: strategy::Strategy;
 pub struct Opts {
     file1: String,
     file2: String,
-    #[clap(short,long,about="Compare kubernetes yaml documents")]
+    #[clap(short,long,help="Compare kubernetes yaml documents")]
     k8s: bool,
-    #[clap(short,long,about="Don't produce coloured output")]
+    #[clap(short,long,help="Don't produce coloured output")]
     no_colour: bool,
-    #[clap(short('x'),long,multiple_occurrences(true),about="Exclude YAML document paths matching regex")]
+    #[clap(short('x'),long,multiple_occurrences(true),help="Exclude YAML document paths matching regex")]
     exclude: Vec<String>,
-    #[clap(short('f'),long,about="Difference strategy file")]
+    #[clap(short('f'),long,help="Difference strategy file")]
     strategy: Option<String>
 }
 
