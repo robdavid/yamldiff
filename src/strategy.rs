@@ -1,8 +1,10 @@
+
 use serde::{Deserialize};
 use yaml_rust::Yaml;
 use crate::error::{Result};
 use crate::keypath::{KeyPathFuncs,KeyPath};
 use regex::Regex;
+use std::cell::{Ref,RefCell};
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 pub struct Strategy {
@@ -50,6 +52,31 @@ struct YamlPathAndValue {
     value: YamlValue
 }
 
+#[derive(Deserialize,Clone,Debug)]
+struct CachedRegex {
+    regex: String,
+    #[serde(skip)]
+    re: RefCell<Option<regex::Regex>>
+}
+
+impl PartialEq for CachedRegex {
+    fn eq(&self, other: &CachedRegex) -> bool {
+        self.regex == other.regex
+    }
+}
+
+impl CachedRegex {
+    fn get_re(&self) -> Result<Ref<Option<regex::Regex>>> {
+        {
+            let mut bre = self.re.borrow_mut();
+            if bre.is_none() {
+                *bre = Some(Regex::new(&self.regex)?);
+            }
+        }
+        Ok(self.re.borrow())
+    }
+}
+
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 #[serde(untagged)]
 enum TransformSelect {
@@ -63,11 +90,21 @@ enum TransformSelect {
     }
 }
 
-#[derive(PartialEq,Clone,Deserialize,Debug)]
-struct ReplaceTransform {
-    path: String,
-    value: YamlValue,
-    with: Option<YamlValue>
+//#[derive(Clone,Deserialize,Debug)]
+#[derive(Deserialize,Clone,Debug,PartialEq)]
+#[serde(untagged)]
+enum ReplaceTransform {
+    Value {
+        path: String,
+        value: YamlValue,
+        with: Option<YamlValue>
+    },
+    Regex {
+        path: String,
+        #[serde(flatten)]
+        regex: CachedRegex,
+        with: String,
+    }
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
@@ -168,9 +205,21 @@ impl TransformSpec {
     }
     fn apply_replace(&self,y: &mut Yaml) -> Result<()> {
         for replace in &self.replace {
-            let current = y.get_at_path(replace.path.as_str())?;
-            if replace.value.equal_yaml(current) {
-                y.set_at_path(replace.path.as_str(),replace.with.to_yaml())?;
+            match replace {
+                ReplaceTransform::Value{path,value,with} => {
+                    let current = y.get_at_path(path.as_str())?;
+                    if value.equal_yaml(current) {
+                        y.set_at_path(path.as_str(),with.to_yaml())?;
+                    }
+                },
+                ReplaceTransform::Regex{path,regex,with} => {
+                    let current = y.get_at_path(path.as_str())?;
+                    if let Some(strval) = current.as_str() {
+                        let rep = regex.get_re()?.as_ref().unwrap().replace_all(strval, with);
+                        let yrep = Yaml::String((*rep).to_string());
+                        y.set_at_path(path.as_str(),yrep)?;
+                    }
+                }
             }
         }   
         Ok(())
@@ -285,7 +334,11 @@ mod test {
                 } else {
                     panic!("Incorrect select type");
                 }
-                assert_eq!(YamlValue::Integer(1),transform.original[0].replace[1].value);
+                if let ReplaceTransform::Value{path:_,value,with:_} = &transform.original[0].replace[1] {
+                    assert_eq!(YamlValue::Integer(1),*value);
+                } else {
+                    panic!("Transform type should be Value")
+                }
             },
             None => panic!("Transform has not been set")
         }

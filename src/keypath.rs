@@ -184,7 +184,7 @@ impl From<usize> for ItemKey {
      }
  }
 
- pub trait KeyPathFuncs where Self: std::marker::Sized {
+ pub trait KeyPathFuncs: std::marker::Sized {
     fn set_at_path<T: Into<KeyPath>>(&mut self,path: T, value: Self) -> Result<()>;
     fn get_at_path<T: Into<KeyPath>>(&self,path: T) -> Result<&Self>;
  }
