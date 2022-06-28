@@ -37,6 +37,9 @@ pub struct Opts {
 }
 
 impl Opts {
+    pub fn new() -> Opts {
+        Opts{file1: String::new(), file2: String::new(), k8s: false, no_colour: false, exclude: vec![], strategy: None}
+    }
     fn exclude_regex(&self) -> Result<Vec<Regex>> {
         let mut result = Vec::<Regex>::new();
         for excl in &self.exclude {
@@ -375,17 +378,10 @@ fn print_location_and_value<'a>(opts: &Opts, lav: &LocationAndValue<'a>,remove: 
     }
 }
 
-fn show_diffs<'a>(opts: &Opts, strategy: &Option<Strategy>, diffs: &Diffs<'a>) -> Result<()> {
+fn show_diffs<'a>(opts: &Opts, diffs: &'a Diffs<'a>) -> Result<()> {
     let mut last_parent1: Option<Location<'a>> = None;
     let mut last_parent2: Option<Location<'a>> = None;
-    let exclude = opts.exclude_regex()?;
-    'diff: for diff in diffs {
-        for re in &exclude {
-            if re.is_match(&diff.key_path().to_string()) { continue 'diff; }
-        }
-        if let Some(strategy) = strategy {
-            if !strategy.filter_accept(&diff.key_path())? { continue 'diff; }
-        }
+    for diff in diffs {
         match diff {
             Diff::Add(lav) => {
                 if new_section(&mut last_parent1, &lav.loc) { println!() }
@@ -436,6 +432,35 @@ fn transform_docs(opts: &Opts, strategy: &Option<Strategy>, y1: &mut Vec<Yaml>, 
     Ok(())
 }
 
+fn filter_diffs<'a>(diffs: Diffs<'a>, strategy: &Option<Strategy>, exclude: &Vec<Regex>) -> Result<Diffs<'a>> {
+    if strategy.is_none() && exclude.is_empty() {
+        return Ok(diffs);
+    }
+    let mut result = vec![];
+    'diff: for d in diffs {
+        for re in exclude {
+            if re.is_match(&d.key_path().to_string()) {
+                continue 'diff;
+            }
+        }
+        if let Some(s) = strategy {
+            if !s.filter_accept(d.key_path())? {
+                continue
+            }
+        }
+        result.push(d)
+    }
+    Ok(result)
+}
+
+fn diff_docs<'a>(opts: &'a Opts, strategy: &'a Option<Strategy>, mut y1: Vec<Yaml>, mut y2: Vec<Yaml>) -> Result<Diffs<'a>> {
+    transform_docs(opts, strategy, &mut y1, &mut y2)?;
+    let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
+    let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
+    let exclude = opts.exclude_regex()?;
+    filter_diffs(find_diffs(opts,&d1,&d2),strategy,&exclude)
+}
+
 pub fn do_diff(opts: &Opts) -> Result<i32> {
     let strategy = match &opts.strategy {
         None => None,
@@ -444,13 +469,52 @@ pub fn do_diff(opts: &Opts) -> Result<i32> {
             Some(Strategy::from_str(&yaml)?)
         }
     };
-    let mut y1 = load_file(&opts.file1)?;
-    let mut y2 = load_file(&opts.file2)?;
-    transform_docs(opts, &strategy, &mut y1, &mut y2)?;
-    let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
-    let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
-    let diffs = find_diffs(opts,&d1,&d2);
-    show_diffs(opts,&strategy,&diffs)?;
+    let y1 = load_file(&opts.file1)?;
+    let y2 = load_file(&opts.file2)?;
+    let diffs = diff_docs(opts, &strategy, y1, y2)?;
+    show_diffs(opts,&diffs)?;
     Ok(if diffs.len() == 0 {0} else {1})
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_regexfilter() {
+        let test_strat = r#"
+        filter:
+            include:
+                - pathRegex: ^metadata\.name$
+        "#;
+        let original = load_file("examples/vault1.yaml").unwrap();
+        let modified = load_file("examples/vault2.yaml").unwrap();
+        let strategy = Some(Strategy::from_str(test_strat).unwrap());
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        assert_eq!(26,diffs.len());
+    }
+
+    #[test]
+    fn test_regexreplace() {
+        let test_strat = r#"
+        filter:
+            include:
+                - pathRegex: metadata\.name
+        transform:
+            original:
+            - replace:
+                - path: "metadata.name"
+                  regex: "vault1"
+                  with: "vault2"
+        "#;
+        let original = load_file("examples/vault1.yaml").unwrap();
+        let modified = load_file("examples/vault2.yaml").unwrap();
+        let strategy = Some(Strategy::from_str(test_strat).unwrap());
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        assert_eq!(0,diffs.len());
+    }
+}

@@ -1,0 +1,3 @@
+filter:
+  include:
+    - pathRegex: ^metadata\.name$
