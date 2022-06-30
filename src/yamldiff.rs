@@ -33,10 +33,11 @@ pub struct Opts {
     #[clap(short('x'),long,multiple_occurrences(true),help="Exclude YAML document paths matching regex")]
     exclude: Vec<String>,
     #[clap(short('f'),long,help="Difference strategy file")]
-    strategy: Option<String>
+    strategy: Option<String>,
 }
 
 impl Opts {
+    #[allow(dead_code)]
     pub fn new() -> Opts {
         Opts{file1: String::new(), file2: String::new(), k8s: false, no_colour: false, exclude: vec![], strategy: None}
     }
@@ -47,7 +48,16 @@ impl Opts {
         }
         Ok(result)
     }
-}
+    fn parse_strategy(&self) -> Result<Option<Strategy>> {
+        match &self.strategy {
+            None => Ok(None),
+            Some(fname) => {
+                let yaml = fs::read_to_string(fname)?;
+                Ok(Some(Strategy::from_str(&yaml)?))
+            }
+        }
+    }
+ }
 
 
 /** A string struct that can hold either a borrowed reference or String value */
@@ -82,12 +92,12 @@ impl<'a> Display for LzyStr<'a> {
 
 /** Kubernetes metatdata - group, version and kind */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
-struct GRK {
+struct GVK {
     api_version: String,
     kind: String
 }
 
-impl Display for GRK {
+impl Display for GVK {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f,"{},{}",self.api_version,self.kind)
     }
@@ -96,7 +106,7 @@ impl Display for GRK {
 /** Kubernetes metadata - group, version kind plus name & namespace */
 #[derive(PartialEq,Eq,Hash,Debug,Clone)]
 struct K8SMeta {
-    grv: GRK,
+    grv: GVK,
     name: String,
     namespace: Option<String>
 }
@@ -194,6 +204,7 @@ impl<'a> Diff<'a> {
     fn differ(fname1: &'a str, fname2: &'a str, doc: Rc<DocKey>, path: KeyPath, value1: &Yaml, value2: &Yaml) -> Diff<'a> {
         Diff::Differ(LocationAndValue::new(fname1,doc.clone(),path.clone(),value1),LocationAndValue::new(fname2,doc,path,value2))
     }
+    #[allow(dead_code)]
     fn key_path(&self) -> &KeyPath {
         match self {
             Diff::Add(lav) => &lav.loc.path,
@@ -243,7 +254,7 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
                 md.insert(Yaml::String("name".to_string()),Yaml::String("myvalue".to_string()));
             }
             let namespace = yaml["metadata"]["namespace"].as_str().map(String::from);
-            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GRK{api_version,kind}});
+            let key = DocKey::K8S(K8SMeta{name,namespace,grv:GVK{api_version,kind}});
             result.insert(key,yaml);
         }
     } else {
@@ -258,13 +269,44 @@ fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
 
 type Diffs<'a> = Vec<Diff<'a>>;
 
-struct DiffContext<'a> {
+struct DiffContext<'a,'b> {
     opts: &'a Opts,
+    path_filter: &'b PathFilter<'b>,
     dockey: Option<Rc<DocKey>>,
     diffs: Diffs<'a>
 }
 
-fn recurse_array_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+struct PathFilter<'a> {
+    strategy: &'a Option<Strategy>,
+    excludes: &'a Vec<Regex>
+}
+
+impl<'a> PathFilter<'a> {
+    fn new(strategy: &'a Option<Strategy>, excludes: &'a Vec<Regex>) -> PathFilter<'a> {
+        PathFilter{strategy,excludes}
+    }
+    fn accept(&self,path: &KeyPath) -> Result<bool> {
+        if self.strategy.is_none() && self.excludes.is_empty() {
+            return Ok(true)
+        }
+        if !self.excludes.is_empty() {
+            let pathstr = path.to_string();
+            for re in self.excludes {
+                if re.is_match(&pathstr) {
+                    return Ok(false);
+                }
+            }
+        }
+        if let Some(s) = self.strategy {
+            if !s.filter_accept(path)? {
+                return Ok(false)
+            }
+        }
+        return Ok(true)
+    }
+}
+
+fn recurse_array_diffs<'a,'b>(ctx: &mut DiffContext<'a,'b>, path: KeyPath, y1: &Yaml, y2: &Yaml) -> Result<()> {
     let empty = Vec::<Yaml>::new();
     let null_yaml = Yaml::Null;
     let arr1 = y1.as_vec().unwrap_or(&empty);
@@ -273,16 +315,18 @@ fn recurse_array_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, 
     for i in 0..max_len {
         let v1 = if i < arr1.len() { &arr1[i] } else { &null_yaml };
         let v2 = if i < arr2.len() { &arr2[i] } else { &null_yaml };
-        recurse_diffs(ctx, path.push(ItemKey::Index(i)), v1, v2);
+        recurse_diffs(ctx, path.push(ItemKey::Index(i)), v1, v2)?;
     }
     if !y1.is_array() {
-        recurse_diffs(ctx, path, y1, &null_yaml);
+        recurse_diffs(ctx, path, y1, &null_yaml)
     } else if !y2.is_array() {
-        recurse_diffs(ctx, path, &null_yaml,y2);
+        recurse_diffs(ctx, path, &null_yaml,y2)
+    } else {
+        Ok(())
     }
 }
 
-fn recurse_hash_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+fn recurse_hash_diffs<'a,'b>(ctx: &mut DiffContext<'a,'b>, path: KeyPath, y1: &Yaml, y2: &Yaml) -> Result<()> {
     let empty = yaml::Hash::new();
     let null_yaml = Yaml::Null;
     let hash1 = y1.as_hash().unwrap_or(&empty);
@@ -291,56 +335,64 @@ fn recurse_hash_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y
         let v1 = &hash1[key];
         let v2 = if hash2.contains_key(key) { &hash2[key] } else { &null_yaml };
         let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-        recurse_diffs(ctx, path.push(next_key), v1, v2);
+        recurse_diffs(ctx, path.push(next_key), v1, v2)?;
     }
     for key in hash2.keys() {
         let v2 = &hash2[key];
         if !hash1.contains_key(key) {
             let next_key = ItemKey::Key(key.as_str().unwrap().to_string());
-            recurse_diffs(ctx, path.push(next_key), &null_yaml, v2);
+            recurse_diffs(ctx, path.push(next_key), &null_yaml, v2)?;
         }
     }
     if !y1.is_hash() {
-        recurse_diffs(ctx, path, y1, &null_yaml);
+        recurse_diffs(ctx, path, y1, &null_yaml)
     } else if !y2.is_hash() {
-        recurse_diffs(ctx, path, &null_yaml,y2);
+        recurse_diffs(ctx, path, &null_yaml,y2)
+    } else {
+        Ok(())
     }
 }
  
-fn recurse_diffs<'a>(ctx: &mut DiffContext<'a>, path: KeyPath, y1: &Yaml, y2: &Yaml) {
+fn recurse_diffs<'a,'b>(ctx: &mut DiffContext<'a,'b>, path: KeyPath, y1: &Yaml, y2: &Yaml) -> Result<()> {
     if y1.is_array() || y2.is_array() {
-        recurse_array_diffs(ctx, path, y1, y2);
+        recurse_array_diffs(ctx, path, y1, y2)?;
     } else if y1.is_hash() || y2.is_hash() {
-        recurse_hash_diffs(ctx, path, y1, y2);
-    } else if y1.is_null() && !y2.is_null() {
-        ctx.diffs.push(Diff::add(&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y2))
-    } else if !y1.is_null() && y2.is_null() {
-        ctx.diffs.push(Diff::remove(&ctx.opts.file1,ctx.dockey.clone().unwrap(),path,y1))
-    } else if *y1 != *y2 {
-        ctx.diffs.push(Diff::differ(&ctx.opts.file1,&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y1,y2))
+        recurse_hash_diffs(ctx, path, y1, y2)?;
+    } else if ctx.path_filter.accept(&path)? {
+        if y1.is_null() && !y2.is_null() {
+            ctx.diffs.push(Diff::add(&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y2))
+        } else if !y1.is_null() && y2.is_null() {
+            ctx.diffs.push(Diff::remove(&ctx.opts.file1,ctx.dockey.clone().unwrap(),path,y1))
+        } else if *y1 != *y2 {
+            ctx.diffs.push(Diff::differ(&ctx.opts.file1,&ctx.opts.file2,ctx.dockey.clone().unwrap(),path,y1,y2))
+        }
     }
+    Ok(())
 }
 
-fn find_diffs<'a>(opts: &'a Opts, d1 : &Documents, d2: &Documents) -> Diffs<'a> {
+fn find_diffs<'a>(opts: &'a Opts, strategy: &'a Option<Strategy>, d1 : &Documents, d2: &Documents) -> Result<Diffs<'a>> {
     let null_yaml = Yaml::Null;
-    let mut ctx = DiffContext{opts,dockey: None,diffs: Diffs::new()};
+    let excludes = opts.exclude_regex()?;
+    let path_filter = PathFilter::new(strategy,&excludes);
+    let mut ctx = DiffContext{opts,dockey: None,path_filter: &path_filter, diffs: Diffs::new()};
     for key in d1.keys() {
         let path = KeyPath::new();
         ctx.dockey = Some(Rc::new(key.clone()));
         if d2.contains_key(key) {
-            recurse_diffs(&mut ctx,path,&d1[key],&d2[key])
+            recurse_diffs(&mut ctx,path,&d1[key],&d2[key])?;
         } else {
-            recurse_diffs(&mut ctx,path,&d1[key],&null_yaml)
+            recurse_diffs(&mut ctx,path,&d1[key],&null_yaml)?;
         }
     }
     for key in d2.keys() {
         if !d1.contains_key(key) {
             let path = KeyPath::new();
             ctx.dockey = Some(Rc::new(key.clone()));
-            recurse_diffs(&mut ctx,path,&null_yaml,&d2[key])
+            recurse_diffs(&mut ctx,path,&null_yaml,&d2[key])?;
         }
     }
-    ctx.diffs
+    let diffs = ctx.diffs;
+    Ok(diffs)
 }
 
 fn new_section<'a>(parent: &mut Option<Location<'a>>, location: &Location<'a>) -> bool {
@@ -432,43 +484,15 @@ fn transform_docs(opts: &Opts, strategy: &Option<Strategy>, y1: &mut Vec<Yaml>, 
     Ok(())
 }
 
-fn filter_diffs<'a>(diffs: Diffs<'a>, strategy: &Option<Strategy>, exclude: &Vec<Regex>) -> Result<Diffs<'a>> {
-    if strategy.is_none() && exclude.is_empty() {
-        return Ok(diffs);
-    }
-    let mut result = vec![];
-    'diff: for d in diffs {
-        for re in exclude {
-            if re.is_match(&d.key_path().to_string()) {
-                continue 'diff;
-            }
-        }
-        if let Some(s) = strategy {
-            if !s.filter_accept(d.key_path())? {
-                continue
-            }
-        }
-        result.push(d)
-    }
-    Ok(result)
-}
-
 fn diff_docs<'a>(opts: &'a Opts, strategy: &'a Option<Strategy>, mut y1: Vec<Yaml>, mut y2: Vec<Yaml>) -> Result<Diffs<'a>> {
     transform_docs(opts, strategy, &mut y1, &mut y2)?;
     let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
     let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
-    let exclude = opts.exclude_regex()?;
-    filter_diffs(find_diffs(opts,&d1,&d2),strategy,&exclude)
+    find_diffs(opts,strategy,&d1,&d2)
 }
 
 pub fn do_diff(opts: &Opts) -> Result<i32> {
-    let strategy = match &opts.strategy {
-        None => None,
-        Some(fname) => {
-            let yaml = fs::read_to_string(fname)?;
-            Some(Strategy::from_str(&yaml)?)
-        }
-    };
+    let strategy = opts.parse_strategy()?;
     let y1 = load_file(&opts.file1)?;
     let y2 = load_file(&opts.file2)?;
     let diffs = diff_docs(opts, &strategy, y1, y2)?;
