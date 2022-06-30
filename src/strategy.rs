@@ -28,7 +28,7 @@ struct Transform {
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 struct TransformSpec {
     #[serde(default)]
-    select: Vec<TransformSelect>,
+    select: Vec<PropertySelect>,
     #[serde(default)]
     replace: Vec<ReplaceTransform>,
     #[serde(default)]
@@ -79,14 +79,15 @@ impl CachedRegex {
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 #[serde(untagged)]
-enum TransformSelect {
+enum PropertySelect {
     Value {
         path: String,
         value: YamlValue
     },
     Regex {
         path: String,
-        regex: String
+        #[serde(flatten)]
+        regex: CachedRegex
     }
 }
 
@@ -171,38 +172,42 @@ impl ConvYaml for Option<YamlValue> {
     }
 }
 
-impl TransformSpec {
-    fn select(&self,y: &Yaml) -> Result<bool> {
-        for select in &self.select {
-            match select {
-                TransformSelect::Value {path,value} => {
-                    match y.get_at_path(path.as_str()) {
-                        Err(_) => { return Ok(false); }
-                        Ok(val) => {
-                            if !value.equal_yaml(val) {
-                                return Ok(false);
-                            }
-                        }
-                    }
+impl PropertySelect {
+    fn accept(&self, y: &Yaml) -> Result<bool> {
+        match self {
+            PropertySelect::Value{path,value} => {
+                match y.get_at_path(path.as_str()) {
+                    Err(_) => Ok(false),
+                    Ok(val) =>  Ok(value.equal_yaml(val))
                 }
-                TransformSelect::Regex {path,regex} => {
-                    match y.get_at_path(path.as_str()) {
-                        Err(_) => { return Ok(false); }
-                        Ok(val) => {
-                            let re = Regex::new(regex)?;
-                            match val {
-                                Yaml::String(text) => {
-                                    if !re.is_match(text) { return Ok(false);}
-                                }
-                                _ => { return Ok(false) }
-                            }
+            }
+            PropertySelect::Regex{path,regex} => {
+                match y.get_at_path(path.as_str()) {
+                    Err(_) => Ok(false),
+                    Ok(val) => {
+                        let re_ref = regex.get_re()?;
+                        let re = re_ref.as_ref().unwrap();
+                        match val {
+                            Yaml::String(text) => Ok(re.is_match(text)),
+                            _ => Ok(false)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+impl TransformSpec {
+    fn select(&self,y: &Yaml) -> Result<bool> {
+        for select in &self.select {
+            if !select.accept(y)? {
+                return Ok(false)
+            }
+        }
         Ok(true)
     }
+
     fn apply_replace(&self,y: &mut Yaml) -> Result<()> {
         for replace in &self.replace {
             match replace {
@@ -328,7 +333,7 @@ mod test {
         match &strategy.transform {
             Some(transform) => {
                 assert_eq!(1,transform.original.len());
-                if let TransformSelect::Value{path,value} = &transform.original[0].select[0] {
+                if let PropertySelect::Value{path,value} = &transform.original[0].select[0] {
                     assert_eq!("kind",path);
                     assert_eq!(YamlValue::String("Deployment".to_string()),*value);
                 } else {
