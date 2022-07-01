@@ -5,6 +5,7 @@ use crate::error::{Result};
 use crate::keypath::{KeyPathFuncs,KeyPath};
 use regex::Regex;
 use std::cell::{Ref,RefCell};
+use std::ops::Deref;
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 pub struct Strategy {
@@ -66,14 +67,25 @@ impl PartialEq for CachedRegex {
 }
 
 impl CachedRegex {
-    fn get_re(&self) -> Result<Ref<Option<regex::Regex>>> {
+    fn get_re(&self) -> Result<ReRef> {
         {
             let mut bre = self.re.borrow_mut();
             if bre.is_none() {
                 *bre = Some(Regex::new(&self.regex)?);
             }
         }
-        Ok(self.re.borrow())
+        Ok(ReRef{re_ref: self.re.borrow()})
+    }
+}
+
+struct ReRef<'a> {
+    re_ref: Ref<'a,Option<Regex>>
+}
+
+impl<'a> Deref for ReRef<'a> {
+    type Target = Regex;
+    fn deref(&self) -> &Regex {
+        self.re_ref.as_ref().unwrap()
     }
 }
 
@@ -185,10 +197,8 @@ impl PropertySelect {
                 match y.get_at_path(path.as_str()) {
                     Err(_) => Ok(false),
                     Ok(val) => {
-                        let re_ref = regex.get_re()?;
-                        let re = re_ref.as_ref().unwrap();
                         match val {
-                            Yaml::String(text) => Ok(re.is_match(text)),
+                            Yaml::String(text) => Ok(regex.get_re()?.is_match(text)),
                             _ => Ok(false)
                         }
                     }
@@ -220,7 +230,7 @@ impl TransformSpec {
                 ReplaceTransform::Regex{path,regex,with} => {
                     let current = y.get_at_path(path.as_str())?;
                     if let Some(strval) = current.as_str() {
-                        let rep = regex.get_re()?.as_ref().unwrap().replace_all(strval, with);
+                        let rep = regex.get_re()?.replace_all(strval, with);
                         let yrep = Yaml::String((*rep).to_string());
                         y.set_at_path(path.as_str(),yrep)?;
                     }
