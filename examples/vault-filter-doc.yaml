@@ -1,0 +1,6 @@
+filter:
+  document:
+    include:
+      - select:
+        - path: kind
+          value: ServiceAccount

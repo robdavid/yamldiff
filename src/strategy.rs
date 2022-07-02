@@ -12,7 +12,7 @@ pub struct Strategy {
     #[serde(default)]
     transform: Option<Transform>,
     #[serde(default)]
-    filter: Option<FilterSpec>
+    filter: Option<Filter>
 }
 
 
@@ -24,6 +24,12 @@ struct Transform {
     modified: Vec<TransformSpec>,
     #[serde(default)]
     both: Vec<TransformSpec>
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+struct Filter {
+    path: Option<PathFilterSpec>,
+    document: Option<DocumentFilterSpec>
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
@@ -122,19 +128,35 @@ enum ReplaceTransform {
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
 #[serde(untagged)]
-enum FilterRule {
+enum PathFilterRule {
     PathRegex {
         #[serde(rename="pathRegex")]
         path_regex: String
+    },
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+#[serde(untagged)]
+enum DocumentFilterRule {
+    PropertySelect {
+        select: Vec<PropertySelect>
     }
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
-struct FilterSpec {
+struct PathFilterSpec {
     #[serde(default)]
-    include: Vec<FilterRule>,
+    include: Vec<PathFilterRule>,
     #[serde(default)]
-    exclude: Vec<FilterRule>
+    exclude: Vec<PathFilterRule>
+}
+
+#[derive(PartialEq,Clone,Deserialize,Debug)]
+struct DocumentFilterSpec {
+    #[serde(default)]
+    include: Vec<DocumentFilterRule>,
+    #[serde(default)]
+    exclude: Vec<DocumentFilterRule>
 }
 
 trait ConvYaml {
@@ -264,10 +286,10 @@ impl TransformSpec {
     }
 }
 
-impl FilterRule {
+impl PathFilterRule {
     fn accept(&self, path: &KeyPath) -> Result<bool> {
         match self {
-            FilterRule::PathRegex{path_regex} => {
+            PathFilterRule::PathRegex{path_regex} => {
                 let re = Regex::new(path_regex)?;
                 Ok(re.is_match(path.to_string().as_str()))
             }
@@ -275,24 +297,51 @@ impl FilterRule {
     }
 }
 
-impl FilterSpec {
-    fn accept(&self, path: &KeyPath) -> Result<bool> {
-        let mut accepted = self.include.is_empty();
-        for rule in &self.include {
-            if rule.accept(path)? { 
-                accepted = true;
+impl DocumentFilterRule {
+    fn accept(&self, y: &Yaml) -> Result<bool> {
+        match self {
+            DocumentFilterRule::PropertySelect{select} => {
+                for rule in select {
+                    if !rule.accept(y)? {
+                        return Ok(false)
+                    }
+                }
+                Ok(true)
+            },
+        }
+    }
+}
+
+fn include_exclude_filter<T,F: Fn(&T) -> Result<bool>>(include: &Vec<T>, exclude: &Vec<T>, predicate: F) -> Result<bool> {
+    let mut accepted = include.is_empty();
+    for item in include {
+        if predicate(item)? { 
+            accepted = true;
+            break;
+        }
+    }
+    if accepted {
+        for item in exclude {
+            if predicate(item)? {
+                accepted = false;
                 break;
             }
         }
-        if accepted {
-            for rule in &self.exclude {
-                if rule.accept(path)? {
-                    accepted = false;
-                    break;
-                }
-            }
-        }
-        Ok(accepted)
+    }
+    Ok(accepted) 
+}
+
+impl PathFilterSpec {
+    fn accept(&self, path: &KeyPath) -> Result<bool> {
+        let predicate = |rule: &PathFilterRule| rule.accept(path);
+        include_exclude_filter(&self.include, &self.exclude, predicate)
+    }
+}
+
+impl DocumentFilterSpec {
+    fn accept(&self, y: &Yaml) -> Result<bool> {
+        let predicate = |rule: &DocumentFilterRule| rule.accept(y);
+        include_exclude_filter(&self.include, &self.exclude, predicate)
     }
 }
 
@@ -311,7 +360,19 @@ impl Strategy {
     pub fn filter_accept(&self, path: &KeyPath) -> Result<bool> {
         match &self.filter {
             None => Ok(true),
-            Some(filter) => filter.accept(path)
+            Some(filter) => match &filter.path {
+                None => Ok(true),
+                Some(path_filter) => path_filter.accept(path)
+            }
+        }
+    }
+    pub fn accept_document(&self, y: &Yaml) -> Result<bool> {
+        match &self.filter {
+            None => Ok(true),
+            Some(filter) => match &filter.document {
+                None => Ok(true),
+                Some(doc_filter) => doc_filter.accept(y)
+            }
         }
     }
 }
@@ -321,7 +382,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_deserialize() {
+    fn test_deserialize_transform() {
         let test_yaml = r#"
         transform:
             original:
@@ -359,5 +420,44 @@ mod test {
         }
     }
 
-    
+    #[test]
+    fn test_deserialize_path_filter() {
+        let test_yaml = r#"
+        filter:
+          path:
+            include:
+              - pathRegex: restring
+
+        "#;
+        let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
+        let include = strategy.filter.unwrap().path.unwrap().include;
+        assert_eq!(include.len(),1);
+        let PathFilterRule::PathRegex{path_regex} = &include[0];
+        assert_eq!(path_regex,"restring")
+    }   
+
+    #[test]
+    fn test_deserialize_document_filter() {
+        let test_yaml = r#"
+        filter:
+          document:
+            include:
+              - select:
+                - path: kind
+                  value: Service
+
+        "#;
+        let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
+        let include = strategy.filter.unwrap().document.unwrap().include;
+        assert_eq!(include.len(),1);
+        let DocumentFilterRule::PropertySelect{select} = &include[0];
+        assert_eq!(select.len(),1);
+        if let PropertySelect::Value{path,value} = &select[0] {
+            assert_eq!(path,"kind");
+            assert_eq!(*value,YamlValue::String("Service".to_string()));
+        } else {
+            panic!("Expected path value select")
+        }
+    }   
+
 }

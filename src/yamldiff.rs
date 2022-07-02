@@ -242,11 +242,16 @@ impl YamlFuncs for Yaml {
     }
 }
 
-fn index(docs: Vec<Yaml>,opts: &Opts) -> Result<Documents> {
+fn index(docs: Vec<Yaml>, opts: &Opts, strategy: &Option<Strategy>) -> Result<Documents> {
     let mut result = Documents::new();
     if opts.k8s {
         for mut yaml in docs {
             if yaml.is_null() { continue; }
+            if let Some(s) = strategy {
+                if  !s.accept_document(&yaml)? {
+                    continue;
+                }
+            }
             let api_version = yaml.string_result("apiVersion")?;
             let kind = yaml.string_result("kind")?;
             let name = yaml["metadata"].string_result("name")?;
@@ -486,8 +491,8 @@ fn transform_docs(opts: &Opts, strategy: &Option<Strategy>, y1: &mut Vec<Yaml>, 
 
 fn diff_docs<'a>(opts: &'a Opts, strategy: &'a Option<Strategy>, mut y1: Vec<Yaml>, mut y2: Vec<Yaml>) -> Result<Diffs<'a>> {
     transform_docs(opts, strategy, &mut y1, &mut y2)?;
-    let d1 = index(y1,opts).chain_err(|| format!("while indexing {}",opts.file1))?;
-    let d2 = index(y2,opts).chain_err(|| format!("while indexing {}",opts.file2))?;
+    let d1 = index(y1,opts,strategy).chain_err(|| format!("while indexing {}",opts.file1))?;
+    let d2 = index(y2,opts,strategy).chain_err(|| format!("while indexing {}",opts.file2))?;
     find_diffs(opts,strategy,&d1,&d2)
 }
 
@@ -508,8 +513,9 @@ mod test {
     fn test_regexfilter() {
         let test_strat = r#"
         filter:
-            include:
-                - pathRegex: ^metadata\.name$
+            path:
+                include:
+                   - pathRegex: ^metadata\.name$
         "#;
         let original = load_file("examples/vault1.yaml").unwrap();
         let modified = load_file("examples/vault2.yaml").unwrap();
@@ -519,13 +525,32 @@ mod test {
         let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
         assert_eq!(26,diffs.len());
     }
+    #[test]
+    fn test_document_filter() {
+        let test_strat = r#"
+        filter:
+            document:
+                include:
+                   - select:
+                     - path: kind
+                       value: ServiceAccount
+        "#;
+        let original = load_file("examples/vault1.yaml").unwrap();
+        let modified = load_file("examples/vault2.yaml").unwrap();
+        let strategy = Some(Strategy::from_str(test_strat).unwrap());
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        assert_eq!(34,diffs.len());
+    }
 
     #[test]
     fn test_regexreplace() {
         let test_strat = r#"
         filter:
-            include:
-                - pathRegex: metadata\.name
+            path:
+                include:
+                    - pathRegex: metadata\.name
         transform:
             original:
             - replace:
