@@ -47,7 +47,7 @@ metadata:
 These files can be compared simply with:
 
 ```text
-$ yamldiff original.yaml modified.yaml
+yamldiff original.yaml modified.yaml
 ```
 
 which will show the structural differences:
@@ -131,14 +131,14 @@ metadata:
 The documents are compared by matching them one-to-one positionally. The document index is shown in the difference output.
 
 ```text
-$ yamldiff original-multidoc.yaml modified-multidoc.yaml
+yamldiff original-multidoc.yaml modified-multidoc.yaml
 ```
 ![singledoc](./doc/images/multidoc.png)
 
 If the number of documents in each file are unequal, the difference is shown as deletions or insertions in the output.
 
 ```text
-$ yamldiff original-multidoc.yaml modified.yaml
+yamldiff original-multidoc.yaml modified.yaml
 ```
 ![singledoc](./doc/images/multi2single.png)
 
