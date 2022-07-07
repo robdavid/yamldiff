@@ -509,6 +509,8 @@ pub fn do_diff(opts: &Opts) -> Result<i32> {
 mod test {
     use super::*;
 
+    //fn fixture(filename &str) -> 
+
     #[test]
     fn test_regexfilter() {
         let test_strat = r#"
@@ -517,8 +519,8 @@ mod test {
                 include:
                    - pathRegex: ^metadata\.name$
         "#;
-        let original = load_file("examples/vault1.yaml").unwrap();
-        let modified = load_file("examples/vault2.yaml").unwrap();
+        let original = load_file("test-fixtures/vault1.yaml").unwrap();
+        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
@@ -535,8 +537,8 @@ mod test {
                      - path: kind
                        value: ServiceAccount
         "#;
-        let original = load_file("examples/vault1.yaml").unwrap();
-        let modified = load_file("examples/vault2.yaml").unwrap();
+        let original = load_file("test-fixtures/vault1.yaml").unwrap();
+        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
@@ -558,8 +560,8 @@ mod test {
                   regex: "vault1"
                   with: "vault2"
         "#;
-        let original = load_file("examples/vault1.yaml").unwrap();
-        let modified = load_file("examples/vault2.yaml").unwrap();
+        let original = load_file("test-fixtures/vault1.yaml").unwrap();
+        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
