@@ -1,0 +1,12 @@
+---
+# Source: vault/templates/injector-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault2-agent-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: vault2
+    app.kubernetes.io/managed-by: Helm
+

@@ -133,14 +133,102 @@ The documents are compared by matching them one-to-one positionally. The documen
 ```text
 yamldiff original-multidoc.yaml modified-multidoc.yaml
 ```
+
 ![singledoc](./doc/images/multidoc.png)
 
-If the number of documents in each file are unequal, the difference is shown as deletions or insertions in the output.
+If any of the documents in either file cannot be matched, for example if there is an unequal number of documents between the two files, the difference is shown as deletions or insertions in the output.
 
 ```text
 yamldiff original-multidoc.yaml modified.yaml
 ```
 ![singledoc](./doc/images/multi2single.png)
 
+### Kubernetes YAML files
 
+When comparing Kubernetes YAML files consisting of multiple documents, the documents can be matched by group, version, kind, name and namespace, rather than just position in the file, by specifying the `-k` flag.
 
+Consider the following two Kubernetes YAML files, which have their documents in opposite orders:
+
+<table>
+<tr>
+<th> original.yaml </th> <th> modified.yaml </th>
+</tr>
+<tr>
+<td>
+
+```yaml
+---
+# Source: vault/templates/server-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.17.0
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: vault
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: vault/templates/injector-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-agent-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: vault
+    app.kubernetes.io/managed-by: Helm
+```
+
+</td>
+<td>
+
+```yaml
+---
+# Source: vault/templates/injector-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-agent-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: vault
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: vault/templates/server-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.17.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: vault
+    app.kubernetes.io/managed-by: Helm
+
+```
+
+</td>
+</td>
+</tr>
+</table>
+
+A standard diff will compare the documents in the order they appear, producing an apparently large set of differences.
+
+```bash
+yamldiff original.yaml modified.yaml
+```
+
+![image](doc/images/naive-out-of-order.png)
+
+However adding the `-k` flag will match documents by Kubernetes resource type, name and namespace, providing us with a more representative picture.
+
+```bash
+yamldiff -k original.yaml modified.yaml
+```
+
+![image](doc/images/sorted-out-of-order.png)

@@ -141,7 +141,7 @@ impl Display for DocKey {
 
 type Documents = LinkedHashMap<DocKey,Yaml>;
 
-#[derive(PartialEq,Clone)]
+#[derive(PartialEq,Clone,Debug)]
 struct Location<'a> {
     fname: &'a str,
     doc: Rc<DocKey>,
@@ -169,7 +169,7 @@ impl<'a> Location<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 struct LocationAndValue<'a> {
     loc: Location<'a>,
     value: Yaml
@@ -187,7 +187,7 @@ impl<'a> Display for LocationAndValue<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 enum Diff<'a> {
     Add(LocationAndValue<'a>),
     Remove(LocationAndValue<'a>),
@@ -508,8 +508,42 @@ pub fn do_diff(opts: &Opts) -> Result<i32> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::path::Path;
 
-    //fn fixture(filename &str) -> 
+    fn fixture(filename: &str) -> Vec<Yaml> {
+        let fixtures = Path::new("test-fixtures");
+        let fixture = fixtures.join(filename);
+        load_file(fixture.as_os_str().to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_singledoc() {
+        let original = fixture("singledoc/original.yaml");
+        let modified = fixture("singledoc/modified.yaml");
+        let opts = Opts::new();
+        let strategy = None;
+        let diffs = diff_docs(&opts,&strategy,original,modified).unwrap();
+        assert_eq!(2,diffs.len());
+        match &diffs[0] {
+            Diff::Differ(o,m) => {
+                assert_eq!("metadata.name",o.loc.path.to_string());
+                assert_eq!("metadata.name",m.loc.path.to_string());
+                assert_eq!("vault1-agent-injector",o.value.as_str().unwrap());
+                assert_eq!("vault2-agent-injector",m.value.as_str().unwrap());
+            },
+            diff => panic!("Unexpected diff {:?}",diff)
+        }
+        match &diffs[1] {
+            Diff::Differ(o,m) => {
+                const LABEL_PATH: &str = "metadata.labels.[app.kubernetes.io/instance]";
+                assert_eq!(LABEL_PATH,o.loc.path.to_string());
+                assert_eq!(LABEL_PATH,m.loc.path.to_string());
+                assert_eq!("vault1",o.value.as_str().unwrap());
+                assert_eq!("vault2",m.value.as_str().unwrap());
+            },
+            diff => panic!("Unexpected diff {:?}",diff)
+        }
+    }   
 
     #[test]
     fn test_regexfilter() {
@@ -519,8 +553,8 @@ mod test {
                 include:
                    - pathRegex: ^metadata\.name$
         "#;
-        let original = load_file("test-fixtures/vault1.yaml").unwrap();
-        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
+        let original = fixture("vault1.yaml");
+        let modified = fixture("vault2.yaml");
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
@@ -537,8 +571,8 @@ mod test {
                      - path: kind
                        value: ServiceAccount
         "#;
-        let original = load_file("test-fixtures/vault1.yaml").unwrap();
-        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
+        let original = fixture("vault1.yaml");
+        let modified = fixture("vault2.yaml");
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
@@ -560,8 +594,8 @@ mod test {
                   regex: "vault1"
                   with: "vault2"
         "#;
-        let original = load_file("test-fixtures/vault1.yaml").unwrap();
-        let modified = load_file("test-fixtures/vault2.yaml").unwrap();
+        let original = fixture("vault1.yaml");
+        let modified = fixture("vault2.yaml");
         let strategy = Some(Strategy::from_str(test_strat).unwrap());
         let mut opts = Opts::new();
         opts.k8s = true;
