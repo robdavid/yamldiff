@@ -22,6 +22,7 @@ use crate::error::{ErrorKind,Result,ResultExt};
 use crate:: strategy::Strategy;
 
 
+/* Command line options */
 #[derive(Parser)]
 pub struct Opts {
     file1: String,
@@ -34,13 +35,24 @@ pub struct Opts {
     exclude: Vec<String>,
     #[clap(short('f'),long,help="Difference strategy file")]
     strategy: Option<String>,
+    #[clap(short('c'),long,help="Display the number of differences only, rather than the differences themselves")]
+    count: bool
 }
 
 impl Opts {
     #[allow(dead_code)]
     pub fn new() -> Opts {
-        Opts{file1: String::new(), file2: String::new(), k8s: false, no_colour: false, exclude: vec![], strategy: None}
+        Opts {
+            file1: String::new(), 
+            file2: String::new(), 
+            k8s: false, 
+            no_colour: false, 
+            exclude: vec![], 
+            strategy: None, 
+            count: false
+        }
     }
+    
     fn exclude_regex(&self) -> Result<Vec<Regex>> {
         let mut result = Vec::<Regex>::new();
         for excl in &self.exclude {
@@ -274,6 +286,55 @@ fn index(docs: Vec<Yaml>, opts: &Opts, strategy: &Option<Strategy>) -> Result<Do
 
 type Diffs<'a> = Vec<Diff<'a>>;
 
+struct DiffStats {
+    total: usize,
+    removals: usize,
+    additions: usize,
+    changes: usize
+}
+
+impl DiffStats {
+    fn from<'a> (diffs: &Diffs<'a>) -> DiffStats {
+        let mut result = DiffStats { 
+            total: diffs.len(), removals: 0, additions: 0, changes: 0 
+        };
+        for diff in diffs {
+            match diff {
+                Diff::Remove(_) => result.removals += 1,
+                Diff::Add(_) => result.additions += 1,
+                Diff::Differ(_, _) => result.changes += 1
+            }
+        }
+        result
+    }
+}
+
+impl Display for DiffStats {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.total {
+            0 => write!(f,"0 differences")?,
+            1 => write!(f,"1 difference")?,
+            n => write!(f,"{} differences",n)?
+        };
+        if self.total != 0 {
+            write!(f," (")?;
+            let mut sep = "";
+            let mut write_value = |name: &str, value: usize| -> std::result::Result<(), fmt::Error> {
+                if value != 0 {
+                    write!(f,"{}{}: {}",sep,name,value)?;
+                    sep = ", "
+                }
+                Ok(())
+            };
+            write_value("additions",self.additions)?;
+            write_value("removals", self.removals)?;
+            write_value("changes", self.changes)?;
+            write!(f,")")?;
+        }
+        Ok(())
+    }
+}
+
 struct DiffContext<'a,'b> {
     opts: &'a Opts,
     path_filter: &'b PathFilter<'b>,
@@ -435,39 +496,46 @@ fn print_location_and_value<'a>(opts: &Opts, lav: &LocationAndValue<'a>,remove: 
     }
 }
 
+
+
 fn show_diffs<'a>(opts: &Opts, diffs: &'a Diffs<'a>) -> Result<()> {
     let mut last_parent1: Option<Location<'a>> = None;
     let mut last_parent2: Option<Location<'a>> = None;
-    for diff in diffs {
-        match diff {
-            Diff::Add(lav) => {
-                if new_section(&mut last_parent1, &lav.loc) { println!() }
-                print_location_and_value(opts,lav,false);
-            }
-            Diff::Remove(lav) => {
-                if new_section(&mut last_parent2, &lav.loc) { println!() }
-                print_location_and_value(opts,lav,true);
-            }
-            Diff::Differ(lav1,lav2) => {
-                let change1 = new_section(&mut last_parent1, &lav1.loc);
-                let change2 = new_section(&mut last_parent1, &lav2.loc);
-                if change1 || change2 { println!() }
-                let str1 = lav1.value.as_str();
-                let str2 = lav2.value.as_str();
-                if str1.is_some() && str2.is_some() && (str1.unwrap().contains('\n') || str2.unwrap().contains('\n')) {
-                    let patch = create_patch(str1.unwrap(),str2.unwrap());
-                    let mut f = PatchFormatter::new();
-                    if !opts.no_colour { f = f.with_color() }
-                    let message = format!("< {}",lav1.loc);
-                    println!("{}",colorize(opts,&message,true));
-                    let message = format!("> {}",lav1.loc);
-                    println!("{}",colorize(opts,&message,false));
-                    print!("{}",f.fmt_patch(&patch));
-                } else {
-                    let message = format!("< {}",lav1);
-                    println!("{}",colorize(opts,&message,true));
-                    let message = format!("> {}",lav2);
-                    println!("{}",colorize(opts,&message,false));
+    if opts.count {
+        let stats = DiffStats::from(diffs);
+        println!("{}",stats);
+    } else {
+        for diff in diffs {
+            match diff {
+                Diff::Add(lav) => {
+                    if new_section(&mut last_parent1, &lav.loc) { println!() }
+                    print_location_and_value(opts,lav,false);
+                }
+                Diff::Remove(lav) => {
+                    if new_section(&mut last_parent2, &lav.loc) { println!() }
+                    print_location_and_value(opts,lav,true);
+                }
+                Diff::Differ(lav1,lav2) => {
+                    let change1 = new_section(&mut last_parent1, &lav1.loc);
+                    let change2 = new_section(&mut last_parent1, &lav2.loc);
+                    if change1 || change2 { println!() }
+                    let str1 = lav1.value.as_str();
+                    let str2 = lav2.value.as_str();
+                    if str1.is_some() && str2.is_some() && (str1.unwrap().contains('\n') || str2.unwrap().contains('\n')) {
+                        let patch = create_patch(str1.unwrap(),str2.unwrap());
+                        let mut f = PatchFormatter::new();
+                        if !opts.no_colour { f = f.with_color() }
+                        let message = format!("< {}",lav1.loc);
+                        println!("{}",colorize(opts,&message,true));
+                        let message = format!("> {}",lav1.loc);
+                        println!("{}",colorize(opts,&message,false));
+                        print!("{}",f.fmt_patch(&patch));
+                    } else {
+                        let message = format!("< {}",lav1);
+                        println!("{}",colorize(opts,&message,true));
+                        let message = format!("> {}",lav2);
+                        println!("{}",colorize(opts,&message,false));
+                    }
                 }
             }
         }

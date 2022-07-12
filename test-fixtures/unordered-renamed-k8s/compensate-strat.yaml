@@ -1,0 +1,12 @@
+transform:
+  original:
+    - select:
+        - path: kind
+          regex: .+
+      replace:
+        - path: metadata.name
+          regex: vault1
+          with: vault2
+        # - path: metadata.labels.[app.kubernetes.io/instance]
+        #   regex: vault1
+        #   with: vault2
