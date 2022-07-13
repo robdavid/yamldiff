@@ -1,4 +1,4 @@
 filter:
   path:
     include:
-      - pathRegex: ^metadata\.name$
+      - regex: ^metadata\.name$

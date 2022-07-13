@@ -130,8 +130,8 @@ enum ReplaceTransform {
 #[serde(untagged)]
 enum PathFilterRule {
     PathRegex {
-        #[serde(rename="pathRegex")]
-        path_regex: String
+        #[serde(flatten)]
+        regex: CachedRegex
     },
 }
 
@@ -289,9 +289,8 @@ impl TransformSpec {
 impl PathFilterRule {
     fn accept(&self, path: &KeyPath) -> Result<bool> {
         match self {
-            PathFilterRule::PathRegex{path_regex} => {
-                let re = Regex::new(path_regex)?;
-                Ok(re.is_match(path.to_string().as_str()))
+            PathFilterRule::PathRegex{regex: path_regex} => {
+                Ok(path_regex.get_re()?.is_match(path.to_string().as_str()))
             }
         }
     }
@@ -426,14 +425,14 @@ mod test {
         filter:
           path:
             include:
-              - pathRegex: restring
+              - regex: restring
 
         "#;
         let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
         let include = strategy.filter.unwrap().path.unwrap().include;
         assert_eq!(include.len(),1);
-        let PathFilterRule::PathRegex{path_regex} = &include[0];
-        assert_eq!(path_regex,"restring")
+        let PathFilterRule::PathRegex{regex: path_regex} = &include[0];
+        assert_eq!(path_regex.regex,"restring")
     }   
 
     #[test]

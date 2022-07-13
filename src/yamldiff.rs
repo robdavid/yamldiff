@@ -619,7 +619,7 @@ mod test {
         filter:
             path:
                 include:
-                   - pathRegex: ^metadata\.name$
+                   - regex: ^metadata\.name$
         "#;
         let original = fixture("vault1.yaml");
         let modified = fixture("vault2.yaml");
@@ -654,7 +654,7 @@ mod test {
         filter:
             path:
                 include:
-                    - pathRegex: metadata\.name
+                    - regex: metadata\.name
         transform:
             original:
             - replace:
