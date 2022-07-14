@@ -336,11 +336,10 @@ transform:
 Assuming this is saved in a file named `strat.yaml`, you can instruct `yamldiff` to apply it's rules by specifying a `-f` (or `--strategy`) option:
 
 ```bash
-$ yamldiff --k8s --count -f strat.yaml
-2 differences (changes: 2)
+yamldiff --k8s -f strat.yaml vault1.yaml vault2.yaml
 ```
 
+![strategy-diff](doc/images/k8s-modified-out-of-order-with-strategy.png)
 
-
-
+Now we are comparing like-for-like resources, and can more clearly see the differences.
 
