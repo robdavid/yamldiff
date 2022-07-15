@@ -2,6 +2,15 @@
 
 Compare two YAML files structurally.
 
+## Building
+
+Build from source using the standard [Rust](https://www.rust-lang.org/tools/install) `cargo` build tool.
+
+```bash
+$ git clone https://github.com/robdavid/yamldiff.git
+$ cd yamldiff
+$ cargo install --path .
+```
 ## Basic usage
 
 Given two YAML files.
@@ -374,3 +383,18 @@ transform:
     A list of replacement rules that will be applied to matching documents. They will be applied in the order that they appear.
     * `path`  
     A YAML property path, in dotted notation, of a property to be modified. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
+    * `regex`  
+      A regular expression of a substring in the property to be replaced. This is only available on string property types. All matching occurrences will be replaced.
+    * `value`  
+      If the property has this value, its value is modified. The type can e string, integer, float or boolean.
+    * `with`  
+      The replacement value. For a regular expression match, this must be a string. Capture groups can also be specified using the syntax for [Rust regex replacement strings](https://docs.rs/regex/1.1.0/regex/struct.Regex.html#replacement-string-syntax), such as `$1`. For value  replacement, the type can be a string, integer, float or boolean.
+  * `set`  
+    An instruction to unconditionally set a property to a value.
+    * `path`  
+      A YAML property path, in dotted notation, of the property to be modified. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
+    * `value`  
+      The value to be set, which can be a string, integer, float or boolean.
+  * `drop`  
+    If drop is true, the entire document is deleted. Incompatible with `replace` or `set`.
+
