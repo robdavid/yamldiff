@@ -566,8 +566,8 @@ fn diff_docs<'a>(opts: &'a Opts, strategy: &'a Option<Strategy>, mut y1: Vec<Yam
 
 pub fn do_diff(opts: &Opts) -> Result<i32> {
     let strategy = opts.parse_strategy()?;
-    let y1 = load_file(&opts.file1)?;
-    let y2 = load_file(&opts.file2)?;
+    let y1 = load_file(&opts.file1).chain_err(|| format!("while parsing {}",&opts.file1))?;
+    let y2 = load_file(&opts.file2).chain_err(|| format!("while parsing {}",&opts.file2))?;
     let diffs = diff_docs(opts, &strategy, y1, y2)?;
     show_diffs(opts,&diffs)?;
     Ok(if diffs.len() == 0 {0} else {1})
