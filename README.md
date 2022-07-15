@@ -344,7 +344,7 @@ yamldiff --k8s -f strat.yaml vault1.yaml vault2.yaml
 
 Now we are comparing like-for-like resources, and can more clearly see the differences.
 
-The complete set of transformation properties has the following structure
+The full spec of transformation rules has the following structure
 
 ``` yaml
 transform:
@@ -372,7 +372,7 @@ transform:
 * `original`  
   The rules to transform the original file (first non-option argument). Consists of a list of transform rules, all of which are applied to the file prior to comparison.
   * `select`  
-    A list of rules that select YAML documents for transformation. All the rules in the list must match for a document to be selected.
+    A list of rules that select YAML documents for transformation. All the criteria must match for a document to be selected.
     * `path`  
     A YAML property path, in dotted notation, of a property to be matched. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
     * `regex`  
@@ -388,9 +388,9 @@ transform:
     * `value`  
       If the property has this value, its value is modified. The type can e string, integer, float or boolean.
     * `with`  
-      The replacement value. For a regular expression match, this must be a string. Capture groups can also be specified using the syntax for [Rust regex replacement strings](https://docs.rs/regex/1.1.0/regex/struct.Regex.html#replacement-string-syntax), such as `$1`. For value  replacement, the type can be a string, integer, float or boolean.
+      The replacement value. For a regular expression match, this must be a string. Capture groups can also be specified using the syntax for [Rust regex replacement strings](https://docs.rs/regex/1.1.0/regex/struct.Regex.html#replacement-string-syntax), such as `$1` for the first capture group. For value  replacement, the type can be a string, integer, float or boolean.
   * `set`  
-    An instruction to unconditionally set a property to a value.
+    Unconditionally set a property to a value in selected documents.
     * `path`  
       A YAML property path, in dotted notation, of the property to be modified. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
     * `value`  
@@ -398,3 +398,7 @@ transform:
   * `drop`  
     If drop is true, the entire document is deleted. Incompatible with `replace` or `set`.
 
+* `modified`  
+  The rules to transform the modified file (the second non-option argument). These have the same structure as for the original file.
+* `both`  
+  The rules to transform both input files. These have the same structure as for the original and modified file.
