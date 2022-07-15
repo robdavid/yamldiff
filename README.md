@@ -68,7 +68,6 @@ The files to be compared can consist of multiple documents.
 
 ```yaml
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -79,7 +78,6 @@ metadata:
     app.kubernetes.io/instance: vault1
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -98,7 +96,6 @@ metadata:
 
 ```yaml
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -109,7 +106,6 @@ metadata:
     app.kubernetes.io/instance: vault2
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -158,7 +154,6 @@ Consider the following two Kubernetes YAML files, which have their documents in 
 
 ```yaml
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -170,7 +165,6 @@ metadata:
     app.kubernetes.io/instance: vault
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -187,7 +181,6 @@ metadata:
 
 ```yaml
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -198,7 +191,6 @@ metadata:
     app.kubernetes.io/instance: vault
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -246,7 +238,6 @@ Sometimes, in order to understand the differences between files, it is useful to
 
 ```yaml
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -258,7 +249,6 @@ metadata:
     app.kubernetes.io/instance: vault1
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -275,7 +265,6 @@ metadata:
 
 ```yaml
 ---
-# Source: vault/templates/injector-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -286,7 +275,6 @@ metadata:
     app.kubernetes.io/instance: vault2
     app.kubernetes.io/managed-by: Helm
 ---
-# Source: vault/templates/server-serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -319,6 +307,8 @@ $ yamldiff --count --k8s vault1.yaml vault2.yaml
 
 This is even worse! Virtually every property now appears to be different. This is because the resource documents can't be matched, since they are named differently ("vault1" naming as compared with "vault2).
 
+#### Transforming
+
 It's possible to do some transforms on the inputs before they are matched. This allows you to work around such systemic differences to get a better picture by compensating for known differences and see what remains. The way to do this is to create a strategy file. Here is an example to deal with this case.
 
 ```yaml
@@ -333,6 +323,8 @@ transform:
           with: vault2
 ```
 
+This is a single strategy rule that is applying a selective *transformation* on documents in the the *original* file (the first file argument). The single transform rule is *selecting* any document that has a non-empty `kind` property, and for those documents is modifying the property at the path `metadata.name`, *replacing* any occurrence of the regular expression "vault1", with "vault2". For our example, this is sufficient to transform the resource naming in the original file to match that of the modified file (in the second argument).
+
 Assuming this is saved in a file named `strat.yaml`, you can instruct `yamldiff` to apply it's rules by specifying a `-f` (or `--strategy`) option:
 
 ```bash
@@ -343,3 +335,42 @@ yamldiff --k8s -f strat.yaml vault1.yaml vault2.yaml
 
 Now we are comparing like-for-like resources, and can more clearly see the differences.
 
+The complete set of transformation properties has the following structure
+
+``` yaml
+transform:
+  original: &transform_block
+    - select:
+        - path: dotted.path
+          value: match_value
+        - path: other.dotted.path
+          regex: match_expression
+      replace:
+        - path: dotted.path
+          regex: match_expression
+          with: substitution
+        - path: dotted.path
+          value: a_value
+          with: replacement_value
+      set:
+        - path: dotted.path
+          value: new_value
+      drop: false
+  modified: *transform_block
+  both: *transform_block
+```
+
+* `original`  
+  The rules to transform the original file (first non-option argument). Consists of a list of transform rules, all of which are applied to the file prior to comparison.
+  * `select`  
+    A list of rules that select YAML documents for transformation. All the rules in the list must match for a document to be selected.
+    * `path`  
+    A YAML property path, in dotted notation, of a property to be matched. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
+    * `regex`  
+      A document is only selected if the property contains a match of this regular expression. To match against the entire property value, use regular expression `^` and `$` characters. Only a properties of type string can be matched with a regular expression.
+    * `value`  
+      A document is only selected if the value of the property matches this value. The type of the value can be a string, integer, float or boolean.
+  * `replace`  
+    A list of replacement rules that will be applied to matching documents. They will be applied in the order that they appear.
+    * `path`  
+    A YAML property path, in dotted notation, of a property to be modified. If an individual property key contains a `.` character, it can be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`.
