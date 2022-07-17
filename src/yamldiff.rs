@@ -649,7 +649,7 @@ mod test {
         filter:
             document:
                 include:
-                   - select:
+                   - properties:
                      - path: kind
                        value: ServiceAccount
         "#;
