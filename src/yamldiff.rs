@@ -25,7 +25,9 @@ use crate:: strategy::Strategy;
 /* Command line options */
 #[derive(Parser)]
 pub struct Opts {
+    #[clap(help="Original YAML file")]
     file1: String,
+    #[clap(help="Modified YAML file")]
     file2: String,
     #[clap(short,long,help="Compare kubernetes yaml documents")]
     k8s: bool,
@@ -33,7 +35,7 @@ pub struct Opts {
     no_colour: bool,
     #[clap(short('x'),long,multiple_occurrences(true),help="Exclude YAML document paths matching regex")]
     exclude: Vec<String>,
-    #[clap(short('f'),long,help="Difference strategy file")]
+    #[clap(short('f'),long,help="File name of strategy file")]
     strategy: Option<String>,
     #[clap(short('c'),long,help="Display the number of differences only, rather than the differences themselves")]
     count: bool
@@ -63,11 +65,13 @@ impl Opts {
     fn parse_strategy(&self) -> Result<Option<Strategy>> {
         match &self.strategy {
             None => Ok(None),
-            Some(fname) => {
-                let yaml = fs::read_to_string(fname)?;
-                Ok(Some(Strategy::from_str(&yaml)?))
-            }
+            Some(fname) => Opts::parse_strategy_file(fname).chain_err(|| format!("can't load {}",fname))
         }
+    }
+
+    fn parse_strategy_file(fname: &str) -> Result<Option<Strategy>> {
+        let yaml = fs::read_to_string(fname)?;
+        Ok(Some(Strategy::from_str(&yaml)?))
     }
  }
 

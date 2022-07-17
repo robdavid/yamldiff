@@ -133,6 +133,9 @@ enum PathFilterRule {
         #[serde(flatten)]
         regex: CachedRegex
     },
+    PathName {
+        name: String
+    }
 }
 
 #[derive(PartialEq,Clone,Deserialize,Debug)]
@@ -291,7 +294,8 @@ impl PathFilterRule {
         match self {
             PathFilterRule::PathRegex{regex: path_regex} => {
                 Ok(path_regex.get_re()?.is_match(path.to_string().as_str()))
-            }
+            },
+            PathFilterRule::PathName{name: path_name} => Ok(path.to_string().as_str() == path_name),
         }
     }
 }
@@ -431,8 +435,11 @@ mod test {
         let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
         let include = strategy.filter.unwrap().path.unwrap().include;
         assert_eq!(include.len(),1);
-        let PathFilterRule::PathRegex{regex: path_regex} = &include[0];
-        assert_eq!(path_regex.regex,"restring")
+        if let PathFilterRule::PathRegex{regex: path_regex} = &include[0] {
+            assert_eq!(path_regex.regex,"restring");
+        } else {
+            panic!("Expected path regex type")
+        }
     }   
 
     #[test]

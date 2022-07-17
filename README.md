@@ -344,7 +344,7 @@ yamldiff --k8s -f strat.yaml vault1.yaml vault2.yaml
 
 Now we are comparing like-for-like resources, and can more clearly see the differences.
 
-The full spec of transformation rules has the following structure
+The full spec of transformation rules has the following structure [^1]:
 
 ``` yaml
 transform:
@@ -402,3 +402,105 @@ transform:
   The rules to transform the modified file (the second non-option argument). These have the same structure as for the original file.
 * `both`  
   The rules to transform both input files. These have the same structure as for the original and modified file.
+
+### Filtering
+
+It is also possible to perform filtering on the input files prior to indexing and comparison. There are two kinds of filtering; document filters that can selectively remove entire documents and path filters that can remove specific properties based on their paths. All filters are applied to both input files.
+
+In the previous example, we saw the transformed file comparison yielded two differences based on a property difference found in both documents. It's possible to filter out the mismatched property in order to reduce the differences to zero. To do this, we can add path based filter rule to the strategy file:
+
+```yaml
+# New filter
+filter:
+  path:
+    exclude:
+      - name: metadata.labels.[app.kubernetes.io/instance]
+
+# Original transform
+transform:
+  original:
+    - select:
+        - path: kind
+          regex: .+
+      replace:
+        - path: metadata.name
+          regex: vault1
+          with: vault2
+
+```
+
+This will then prune out the non-matching property in each document, giving a final successful comparison .
+
+```bash
+$ yamldiff -ckf strat-filter.yaml vault1.yaml vault2.yaml
+0 differences
+```
+
+The full specification of filter rules has the following structure[^1]:
+
+```yaml
+filter:
+  document:
+    exclude: &document_filter_rules
+        - path: dotted.path
+          value: match_value
+        - path: other.dotted.path
+          regex: match_expression
+    include: *document_filter_rules
+  path:
+    exclude: &path_filter_rules
+      - name: path_name
+      - regex: path_pattern
+    include: *path_filter_rules
+```
+
+* `filter`  
+  Describes a set of filters, all of which are applied to both input files prior to comparison.
+  * `document`  
+    Describes a set of document filters. By default, all documents are included. If any `include` filters are given, a document must match *at least one* of these to be included. If any `exclude` filters are given, it must also not match *any* of these to be included.
+    * `exclude`  
+      Contains a list of property to value comparison objects. All the comparisons *must fail* for a document for it to be included.
+    * `include`  
+      Contains a list of comparison objects with the same structure as `exclude`. This list must either be empty, or must contain *at least one* comparison that matches for a document in order for it to be included.
+      * `path`  
+        The path name of the property to compare.
+      * `value`  
+        The comparison is true if the value of the property is equal to this value. The type of `value` can be string, integer, float or boolean.
+      * `regex`  
+        The comparison is true if the value of the property contains this regular expression. The type of the property must be a string.
+  * `path`  
+    Describes a set of path filters. Properties with paths that do not match these rules are pruned from all documents of both input files prior to indexing and comparison.
+    * `exclude`  
+      Contains path comparison objects. All the path comparisons *must fail* for a path for it to be included.
+    * `include`  
+      Contains a list of comparison objects with the same structure as `exclude`. This list must either be empty, or must contain *one or more* comparisons that match for a path in order for it to be included.
+      * `name`  
+        Match a path by exact name. Path names are build from keys at each level of nesting in the YAML document, joined by a `.` character. If an individual property key contains a `.` character, it will be surrounded by square brackets, e.g. `"metadata.labels.[app.kubernetes.io/name]"`
+      * `regex`  
+        The path comparison succeeds if the path name contains this regular expression. As with `name` the path name comprises key names joined with `.` with square brackets inserted as required. Matching any of these characters will require escaping them in the regular expression, e.g.  
+
+        ```yaml
+        regex: ^metadata\.labels\.\[app\.kubernetes\.io/name\]$
+        ```
+
+## Command Line Options
+
+```text
+USAGE:
+    yamldiff [OPTIONS] <FILE1> <FILE2>
+
+ARGS:
+    <FILE1>    Original YAML file
+    <FILE2>    Modified YAML file
+
+OPTIONS:
+    -c, --count                  Display the number of differences only, rather than the differences
+                                 themselves
+    -f, --strategy <STRATEGY>    File name of strategy file
+    -h, --help                   Print help information
+    -k, --k8s                    Compare kubernetes yaml documents
+    -n, --no-colour              Don't produce coloured output
+    -x, --exclude <EXCLUDE>      Exclude YAML document paths matching regex
+```
+
+[^1]: This example is making use of [YAML anchors (&) and references (*)](https://yaml.org/spec/1.2-old/spec.html#id2760395) to reduce repetition.
