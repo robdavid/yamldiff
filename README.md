@@ -442,6 +442,7 @@ The full specification of filter rules has the following structure[^1]:
 filter:
   document:
     exclude: &document_filter_rules
+      - properties:
         - path: dotted.path
           value: match_value
         - path: other.dotted.path
@@ -460,14 +461,16 @@ filter:
     Describes a set of document filters. By default, all documents are included. If any `include` filters are given, a document must match *at least one* of these to be included. If any `exclude` filters are given, it must also not match *any* of these to be included.
     * `exclude`  
       Contains a list of property to value comparison objects. All the comparisons *must fail* for a document for it to be included.
+      * `properties`  
+        Compare by list of property criteria. All the criteria in the list must pass for the comparison to succeed.
+        * `path`  
+          The path name of a property to compare.
+        * `value`  
+          The criterion is true if the value of the property is equal to this value. The type of `value` can be string, integer, float or boolean.
+        * `regex`  
+          The criterion is true if the value of the property contains this regular expression. The type of the property must be a string.
     * `include`  
       Contains a list of comparison objects with the same structure as `exclude`. This list must either be empty, or must contain *at least one* comparison that matches for a document in order for it to be included.
-      * `path`  
-        The path name of the property to compare.
-      * `value`  
-        The comparison is true if the value of the property is equal to this value. The type of `value` can be string, integer, float or boolean.
-      * `regex`  
-        The comparison is true if the value of the property contains this regular expression. The type of the property must be a string.
   * `path`  
     Describes a set of path filters. Properties with paths that do not match these rules are pruned from all documents of both input files prior to indexing and comparison.
     * `exclude`  
