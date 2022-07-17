@@ -582,10 +582,20 @@ mod test {
     use super::*;
     use std::path::Path;
 
-    fn fixture(filename: &str) -> Vec<Yaml> {
+    fn fixture_fname(filename: &str) -> String {
         let fixtures = Path::new("test-fixtures");
         let fixture = fixtures.join(filename);
-        load_file(fixture.as_os_str().to_str().unwrap()).unwrap()
+        fixture.as_os_str().to_str().unwrap().to_string()
+    }
+
+    fn fixture_text(filename: &str) -> String {
+        let fname = fixture_fname(filename);
+        fs::read_to_string(fname).unwrap()
+    }
+
+    fn fixture(filename: &str) -> Vec<Yaml> {
+        let fname = fixture_fname(filename);
+        load_file(&fname).unwrap()
     }
 
     #[test]
@@ -674,4 +684,47 @@ mod test {
         let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
         assert_eq!(0,diffs.len());
     }
+
+    #[test]
+    fn test_unordered_renamed() {
+        let original = fixture("unordered-renamed-k8s/vault1.yaml");
+        let modified = fixture("unordered-renamed-k8s/vault2.yaml");
+        let strategy = None;
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        let stats = DiffStats::from(&diffs);
+        assert_eq!(34,stats.total);
+        assert_eq!(17,stats.additions);
+        assert_eq!(17,stats.removals);
+        assert_eq!(0,stats.changes);
+    }
+
+    #[test]
+    fn test_unordered_renamed_strat() {
+        let original = fixture("unordered-renamed-k8s/vault1.yaml");
+        let modified = fixture("unordered-renamed-k8s/vault2.yaml");
+        let strategy_text = fixture_text("unordered-renamed-k8s/strat.yaml");
+        let strategy = Some(Strategy::from_str(&strategy_text).unwrap());
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        let stats = DiffStats::from(&diffs);
+        assert_eq!(2,stats.total);
+        assert_eq!(2,stats.changes);
+    }
+
+    #[test]
+    fn test_unordered_renamed_strat_filter() {
+        let original = fixture("unordered-renamed-k8s/vault1.yaml");
+        let modified = fixture("unordered-renamed-k8s/vault2.yaml");
+        let strategy_text = fixture_text("unordered-renamed-k8s/strat-filter.yaml");
+        let strategy = Some(Strategy::from_str(&strategy_text).unwrap());
+        let mut opts = Opts::new();
+        opts.k8s = true;
+        let diffs = diff_docs(&opts, &strategy, original, modified).unwrap();
+        let stats = DiffStats::from(&diffs);
+        assert_eq!(0,stats.total);
+    }
+
 }
