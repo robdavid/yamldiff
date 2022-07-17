@@ -142,7 +142,7 @@ enum PathFilterRule {
 #[serde(untagged)]
 enum DocumentFilterRule {
     PropertySelect {
-        select: Vec<PropertySelect>
+        properties: Vec<PropertySelect>
     }
 }
 
@@ -303,7 +303,7 @@ impl PathFilterRule {
 impl DocumentFilterRule {
     fn accept(&self, y: &Yaml) -> Result<bool> {
         match self {
-            DocumentFilterRule::PropertySelect{select} => {
+            DocumentFilterRule::PropertySelect{properties: select} => {
                 for rule in select {
                     if !rule.accept(y)? {
                         return Ok(false)
@@ -448,7 +448,7 @@ mod test {
         filter:
           document:
             include:
-              - select:
+              - properties:
                 - path: kind
                   value: Service
 
@@ -456,7 +456,7 @@ mod test {
         let strategy = Strategy::from_str(test_yaml).map_err(|e| e.to_string()).unwrap();
         let include = strategy.filter.unwrap().document.unwrap().include;
         assert_eq!(include.len(),1);
-        let DocumentFilterRule::PropertySelect{select} = &include[0];
+        let DocumentFilterRule::PropertySelect{properties: select} = &include[0];
         assert_eq!(select.len(),1);
         if let PropertySelect::Value{path,value} = &select[0] {
             assert_eq!(path,"kind");
