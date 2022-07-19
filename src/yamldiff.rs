@@ -14,6 +14,8 @@ use std::fmt::{Formatter,Display};
 use std::rc::Rc;
 use std::cmp::max;
 use std::{fs,fmt};
+use std::io;
+use std::io::{BufRead};
 use diffy::{create_patch,PatchFormatter};
 use ansi_colors::*;
 use regex::Regex;
@@ -166,7 +168,8 @@ struct Location<'a> {
 
 impl<'a> Display for Location<'a> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f,"{}: {} {}",self.fname,self.doc,self.path)
+        let fname = if self.fname == "-" { "<STDIN>"} else { self.fname };
+        write!(f,"{}: {} {}",fname,self.doc,self.path)
     }
 }
 
@@ -231,7 +234,17 @@ impl<'a> Diff<'a> {
 }
 
 fn load_file(fname: &str) -> Result<Vec<Yaml>> {
-    let yaml_text = fs::read_to_string(fname).chain_err(|| format!("while reading {}",fname))?;
+    let yaml_text = 
+        if fname == "-" {
+            let mut buffer = String::new();
+            for line in io::stdin().lock().lines() {
+                buffer.push_str(&line.chain_err(|| "while reading standard input")?);
+                buffer.push_str("\n")
+            }
+            buffer
+        } else {
+            fs::read_to_string(fname).chain_err(|| format!("while reading {}",fname))?
+        };
     Ok(YamlLoader::load_from_str(&yaml_text)?)
 }
 
